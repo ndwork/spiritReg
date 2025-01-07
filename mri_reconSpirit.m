@@ -78,7 +78,6 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
     out = out(:);
   end
 
-doChecks = true
   if doChecks == true
     [chkW,errChkW] = checkAdjoint( rand( M, N, C ) + 1i * rand( M, N, C ), @applyW );
     if chkW == true
@@ -98,7 +97,7 @@ doChecks = true
 
   %-- Find the interpolation coefficients w
   for coilIndx = 1 : C  
-    A = zeros( (  n - floor( wSize(2) / 2 ) ) * ( m - floor( wSize(1) / 2 ) ) , wSize(1)*wSize(2)*C-1 );
+    A = zeros( (  n - wSize(2) + 1 ) * ( m - wSize(1) + 1 ) , wSize(1)*wSize(2)*C-1 );
     y = zeros( size(A,1), 1 );
     pt2RemoveIndx = ceil( wSize(1)/2 ) + floor( wSize(2)/2 ) * wSize(1) + ( coilIndx - 1 ) * wSize(2) * wSize(1);
     aIndx = 1;
@@ -107,20 +106,32 @@ doChecks = true
         subACR = acr( j - floor( wSize(2)/2 ) : j + floor( wSize(2)/2 ), ...
                                i - floor( wSize(2)/2 ) : i + floor( wSize(2)/2 ), : );
         subACR = subACR(:);
-        b( aIndx ) = subACR( pt2RemoveIndx );
+        y( aIndx ) = subACR( pt2RemoveIndx );
         subACR = [ subACR( 1 : pt2RemoveIndx-1 ); subACR( pt2RemoveIndx + 1 : end ); ];
         A( aIndx, : ) = subACR';
         aIndx = aIndx + 1;
       end
     end
-    wCoil = A \ y;
+    wCoil = A \ y(:);
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w( :, :, :, coilIndx ) = reshape( wCoil, [ wSize C ] );
   end
 
   %-- Use the interpolation coefficients to estimate the missing data
-  k0 = zeros( nEst, 1 );
-  [ kStar, lsqrFlag ] = lsqr( @applyA, b, [], [], [], [], k0 );
+
+  k0 = zeros( nEst / C, C );
+  for coilIndx = 1 : C
+    dataIndxs = find( sampleMask(:,:,1) ~= 0 );
+    [ yDataIndxs, xDataIndxs ] = ind2sub( [ M N ], dataIndxs );
+    F = scatteredInterpolant( xDataIndxs, yDataIndxs, kData( dataIndxs ), 'nearest' );
+    estIndxs = find( sampleMask(:,:,1) == 0 );
+    [ yEstIndxs, xEstIndxs ] = ind2sub( [ M N ], estIndxs );
+    k0( :, coilIndx ) = F( xEstIndxs, yEstIndxs );
+  end
+
+  %k0 = zeros( nEst, 1 );
+  tol = 1d-6;
+  [ kStar, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( @applyA, b, tol, 150, [], [], k0(:) );   %#ok<ASGLU>
 
   kOut = kData;
   kOut( not( sampleMask ) ) = kStar;

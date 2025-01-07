@@ -4,7 +4,7 @@ function run_reconSpiritReg( datacases )
   showScale = 3;
   verbose = true;
   wSize = 5;
-  sACR = 17;
+  sACR = 31;
   sampleFraction = 0.3;
 
   if nargin < 1
