@@ -13,6 +13,7 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
   %
   % Equivalently, we want to minimize || ( W - I ) k ||_2 over k_est.
   % Equivalently, minimize || ( W - I ) ( toMatrix( D^C ) )^T k_est + ( W - I ) toMatrix( D )^T k_collected ||_2.
+  % Equivalently, minimize || ( W - I ) ( toMatrix( D^C ) )^T k_est + ( W - I ) kData ||_2.
   %
   % Inputs:
   % kData - a complex matrix of size M x N x C, where C is the number of coils
@@ -57,15 +58,15 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
   nSamples = sum( sampleMask(:) );
   nEst = numel( sampleMask ) - nSamples;
 
-  % b = ( W - I ) toMatrix( D )^T k_collected
-  b = applyW( kData ) - kData;  b = b(:);
+  % b = ( W - I ) toMatrix( D )^T kCollected
+  b = applyW( kData ) - kData;  b = -b(:);
 
-  % ( W - I ) ( toMatrix( D^C ) )^T k_est
+  % ( W - I ) ( toMatrix( D^C ) )^T kEst == ( W - I ) kEstMatrix
+  kEstMatrix = zeros( M, N, nCoils );
   function out = applyA( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      k_est = zeros( M, N, nCoils );
-      k_est( not( sampleMask ) ) = in;
-      out = applyW( k_est ) - k_est;
+      kEstMatrix( not( sampleMask ) ) = in;
+      out = applyW( kEstMatrix ) - kEstMatrix;
     else
       in = reshape( in, [ M N nCoils] );
       tmp = applyW( in, 'transp' ) - in;
@@ -74,6 +75,7 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
     out = out(:);
   end
 
+doChecks = true
   if doChecks == true
     [chkW,errChkW] = checkAdjoint( rand( M, N, nCoils ) + 1i * rand( M, N, nCoils ), @applyW );
     if chkW == true
@@ -130,11 +132,12 @@ disp([ 'Relative Error for yApplyW is: ', num2str( yApplyWRelErr ) ]);
   %-- Use the interpolation coefficients to estimate the missing data
 
   k0 = zeros( nEst / nCoils, nCoils );
-  dataIndxs = find( sampleMask(:,:,1) ~= 0 );
+  dataIndxs = find( sampleMask(:,:,1) == 1 );
   [ yDataIndxs, xDataIndxs ] = ind2sub( [ M N ], dataIndxs );
   for coilIndx = 1 : nCoils
-    kDataCoil = kData( :, :, coilIndx );
-    F = scatteredInterpolant( xDataIndxs, yDataIndxs, kDataCoil( dataIndxs ), 'nearest' );
+    kDataCoil = kData(:,:,coilIndx);
+    kDataCoil = kDataCoil(sampleMask(:,:,1) == 1);
+    F = scatteredInterpolant( xDataIndxs, yDataIndxs, kDataCoil, 'nearest' );
     estIndxs = find( sampleMask(:,:,1) == 0 );
     [ yEstIndxs, xEstIndxs ] = ind2sub( [ M N ], estIndxs );
     k0( :, coilIndx ) = F( xEstIndxs, yEstIndxs );
@@ -143,12 +146,6 @@ disp([ 'Relative Error for yApplyW is: ', num2str( yApplyWRelErr ) ]);
 tmp = kData;
 tmp( sampleMask == 0 ) = k0(:);
 figure;  showImageCube( 20*log10( abs( reshape( tmp, [ M N nCoils ] ) ) ), 2 );
-
-data2 = kData(100:130,50:90,2);
-stripes2 = tmp(100:130,50:90,2);
-
-figure;  imshowscale( abs( data2 ), 30 );
-figure;  imshowscale( abs( stripes2 ), 30 );
 
   %k0 = zeros( nEst, 1 );
   tol = 1d-6;
