@@ -75,7 +75,6 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
     out = out(:);
   end
 
-doChecks = true
   if doChecks == true
     [chkW,errChkW] = checkAdjoint( rand( M, N, nCoils ) + 1i * rand( M, N, nCoils ), @applyW );
     if chkW == true
@@ -94,7 +93,6 @@ doChecks = true
   end
 
   %-- Find the interpolation coefficients w
-yHats = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), nCoils );
   acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
   for coilIndx = 1 : nCoils
     A = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), wSize(1) * wSize(2) * nCoils - 1 );
@@ -114,40 +112,12 @@ yHats = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), nCoils 
       end
     end
     wCoil = A \ y(:);
-yHat = A * wCoil;
-yHats(:,coilIndx) = yHat;
-yRelErr = norm( yHat(:) - y(:) ) / norm( y(:) );
-disp([ 'Relative error for coil ', num2str(coilIndx) ', is: ', num2str( yRelErr ) ]);
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w( :, :, :, coilIndx ) = reshape( wCoil, [ wSize nCoils ] );
   end
 
-yApplyW = applyW( kData );
-yApplyW = cropData( yApplyW, [ sACR(2) - wSize(2) + 1, sACR(1) - wSize(1) + 1, nCoils ] );
-yApplyW = yApplyW(:);
-yApplyWRelErr = norm( yApplyW(:) - yHats(:) ) / norm( yHats(:) );
-disp([ 'Relative Error for yApplyW is: ', num2str( yApplyWRelErr ) ]);
-
-
   %-- Use the interpolation coefficients to estimate the missing data
-
-  k0 = zeros( nEst / nCoils, nCoils );
-  dataIndxs = find( sampleMask(:,:,1) == 1 );
-  [ yDataIndxs, xDataIndxs ] = ind2sub( [ M N ], dataIndxs );
-  for coilIndx = 1 : nCoils
-    kDataCoil = kData(:,:,coilIndx);
-    kDataCoil = kDataCoil(sampleMask(:,:,1) == 1);
-    F = scatteredInterpolant( xDataIndxs, yDataIndxs, kDataCoil, 'nearest' );
-    estIndxs = find( sampleMask(:,:,1) == 0 );
-    [ yEstIndxs, xEstIndxs ] = ind2sub( [ M N ], estIndxs );
-    k0( :, coilIndx ) = F( xEstIndxs, yEstIndxs );
-  end
-
-tmp = kData;
-tmp( sampleMask == 0 ) = k0(:);
-figure;  showImageCube( 20*log10( abs( reshape( tmp, [ M N nCoils ] ) ) ), 2 );
-
-  %k0 = zeros( nEst, 1 );
+  k0 = zeros( nEst, 1 );
   tol = 1d-6;
   nMaxIter = 1000;
   [ kStar, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( @applyA, b, tol, nMaxIter, [], [], k0(:) );   %#ok<ASGLU>
