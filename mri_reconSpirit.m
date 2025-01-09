@@ -130,14 +130,25 @@ disp([ 'Relative Error for yApplyW is: ', num2str( yApplyWRelErr ) ]);
   %-- Use the interpolation coefficients to estimate the missing data
 
   k0 = zeros( nEst / nCoils, nCoils );
+  dataIndxs = find( sampleMask(:,:,1) ~= 0 );
+  [ yDataIndxs, xDataIndxs ] = ind2sub( [ M N ], dataIndxs );
   for coilIndx = 1 : nCoils
-    dataIndxs = find( sampleMask(:,:,1) ~= 0 );
-    [ yDataIndxs, xDataIndxs ] = ind2sub( [ M N ], dataIndxs );
-    F = scatteredInterpolant( xDataIndxs, yDataIndxs, kData( dataIndxs ), 'nearest' );
+    kDataCoil = kData( :, :, coilIndx );
+    F = scatteredInterpolant( xDataIndxs, yDataIndxs, kDataCoil( dataIndxs ), 'nearest' );
     estIndxs = find( sampleMask(:,:,1) == 0 );
     [ yEstIndxs, xEstIndxs ] = ind2sub( [ M N ], estIndxs );
     k0( :, coilIndx ) = F( xEstIndxs, yEstIndxs );
   end
+
+tmp = kData;
+tmp( sampleMask == 0 ) = k0(:);
+figure;  showImageCube( 20*log10( abs( reshape( tmp, [ M N nCoils ] ) ) ), 2 );
+
+data2 = kData(100:130,50:90,2);
+stripes2 = tmp(100:130,50:90,2);
+
+figure;  imshowscale( abs( data2 ), 30 );
+figure;  imshowscale( abs( stripes2 ), 30 );
 
   %k0 = zeros( nEst, 1 );
   tol = 1d-6;
