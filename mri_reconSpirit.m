@@ -36,7 +36,6 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
   if isscalar( wSize ), wSize = [ wSize wSize ]; end
 
   [ M, N, nCoils ] = size( kData );
-  w = zeros( wSize(1), wSize(2), nCoils, nCoils );   % Interpolation coefficients
 
   function out = applyW( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
@@ -58,9 +57,6 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
   nSamples = sum( sampleMask(:) );
   nEst = numel( sampleMask ) - nSamples;
 
-  % b = ( W - I ) toMatrix( D )^T kCollected
-  b = applyW( kData ) - kData;  b = -b(:);
-
   % ( W - I ) ( toMatrix( D^C ) )^T kEst == ( W - I ) kEstMatrix
   kEstMatrix = zeros( M, N, nCoils );
   function out = applyA( in, op )
@@ -75,25 +71,9 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
     out = out(:);
   end
 
-  if doChecks == true
-    [chkW,errChkW] = checkAdjoint( rand( M, N, nCoils ) + 1i * rand( M, N, nCoils ), @applyW );
-    if chkW == true
-      disp( 'Check of W Adjoint passed' );
-    else
-      error([ 'Check of W Adjoint failed with error ', num2str(errChkW) ]);
-    end
-
-    k0 = rand( nEst, 1 ) + 1i * rand( nEst, 1 );
-    [chkA,errChkA] = checkAdjoint( k0, @applyA );
-    if chkA == true
-      disp( 'Check of A Adjoint passed' );
-    else
-      error([ 'Check of A Adjoint failed with error ', num2str(errChkA) ]);
-    end
-  end
-
   %-- Find the interpolation coefficients w
   acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
+  w = zeros( wSize(1), wSize(2), nCoils, nCoils );   % Interpolation coefficients
   for coilIndx = 1 : nCoils
     A = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), wSize(1) * wSize(2) * nCoils - 1 );
     if size( A, 1 ) < size( A, 2 ), error( 'The size of the ACR is too small for this size kernel' ); end
@@ -115,6 +95,26 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w( :, :, :, coilIndx ) = reshape( wCoil, [ wSize nCoils ] );
   end
+
+  if doChecks == true
+    [chkW,errChkW] = checkAdjoint( rand( M, N, nCoils ) + 1i * rand( M, N, nCoils ), @applyW );
+    if chkW == true
+      disp( 'Check of W Adjoint passed' );
+    else
+      error([ 'Check of W Adjoint failed with error ', num2str(errChkW) ]);
+    end
+
+    k0 = rand( nEst, 1 ) + 1i * rand( nEst, 1 );
+    [chkA,errChkA] = checkAdjoint( k0, @applyA );
+    if chkA == true
+      disp( 'Check of A Adjoint passed' );
+    else
+      error([ 'Check of A Adjoint failed with error ', num2str(errChkA) ]);
+    end
+  end
+
+  % b = ( W - I ) toMatrix( D )^T kCollected
+  b = applyW( kData ) - kData;  b = -b(:);
 
   %-- Use the interpolation coefficients to estimate the missing data
   k0 = zeros( nEst, 1 );
