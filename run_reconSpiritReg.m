@@ -31,11 +31,14 @@ function run_reconSpiritReg( datacases )
     acrMask = padData( ones( sACR, sACR ), sImg );
     %sampleMask = mri_makeSampleMask( sImg, nSamples, 'maskType', 'VDPD', 'startMask', acrMask );
     sampleMask = ones( size( kData, [1 2] ) );
-    sampleMask(:,1:2:end) = 0;
+    sampleMask(:,1:3:end) = 0;
+    sampleMask(:,2:3:end) = 0;
     sampleMask = sampleMask | acrMask;
     kSamples = bsxfun( @times, kData, sampleMask );
 
-    img = mri_reconSpirit( kSamples, sACR, wSize );
+    img = mri_reconSpirit( kSamples, sACR, wSize, 'epsilon', 1 );
 
+    figure;  imshowscale( abs( img ) , 3 );
+    disp( 'I got here' );
   end
 end
