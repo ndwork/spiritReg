@@ -23,7 +23,7 @@ function run_reconSpiritReg( datacases )
     disp([ 'Working on datacase ', indx2str( datacase, max( datacases ) ) ]);
 
     %[ kData, noiseCoords, ~, trueRecon ] = loadDatacase( datacase );
-    load( 'stuff.mat', 'kData', 'sampleMask' );
+    load( 'stuff.mat', 'kData', 'sampleMask', 'sMaps' );
     kData = squeeze( kData ) / max( abs( kData(:) ) );  % assumes one slice.
 
     nSamples = round( sampleFraction * size( kData, 1 ) * size( kData, 2 ) );
@@ -36,7 +36,10 @@ function run_reconSpiritReg( datacases )
     sampleMask = sampleMask | acrMask;
     kSamples = bsxfun( @times, kData, sampleMask );
 
-    img = mri_reconSpirit( kSamples, sACR, wSize, 'epsilon', 1 );
+    %sMaps = mri_makeSensitivityMaps( kSamples );
+
+    img = mri_reconSpiritReg( kSamples, sACR, wSize, 'lambda', 1d-3, 'sMaps', sMaps );
+    %img = mri_reconSpirit( kSamples, sACR, wSize, 'epsilon', 1 );
 
     figure;  imshowscale( abs( img ) , 3 );
     disp( 'I got here' );
