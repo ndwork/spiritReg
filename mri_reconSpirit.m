@@ -13,6 +13,12 @@ function img = mri_reconSpirit( kData, sACR, wSize, varargin )
   % Outputs
   % img - a 2D complex array of size M x N that is the output image.
 
+  if nargin < 3
+    disp( 'Usage: img = mri_reconSpirit( kData, sACR, wSize [, ''epsilon'', epsilon ] )' );
+    if nargout > 0, img = []; end
+    return;
+  end
+
   p = inputParser;
   p.addParameter( 'doChecks', false );
   p.addParameter( 'epsilon', [], @isnonnegative );
