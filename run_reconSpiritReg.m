@@ -31,18 +31,19 @@ function run_reconSpiritReg( datacases )
     acrMask = padData( ones( sACR, sACR ), sImg );
     %sampleMask = mri_makeSampleMask( sImg, nSamples, 'maskType', 'VDPD', 'startMask', acrMask );
     sampleMask = ones( size( kData, [1 2] ) );
-    sampleMask(:,1:2:end) = 0;
     sampleMask(1:2:end,:) = 0;
+    sampleMask(:,1:2:end) = 0;
     sampleMask = sampleMask | acrMask;
     kSamples = bsxfun( @times, kData, sampleMask );
 
     %sMaps = mri_makeSensitivityMaps( kSamples );
+    %img = mri_reconSpirit( kSamples, sACR, wSize );
 
-    imgMBR = mri_reconModelBased( kData, 'sMaps', sMaps );
-    imgSpiritReg = mri_reconSpiritReg( kSamples, sACR, wSize, 'lambda', 1, 'sMaps', sMaps );
-    %img = mri_reconSpirit( kSamples, sACR, wSize, 'epsilon', 1 );
+    %imgMBR = mri_reconModelBased( kData, 'sMaps', sMaps );
+    %imgSpiritReg = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'lambda', 1 );
+    imgSpiritReg = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'gamma', 1 );
 
-    figure;  imshowscale( abs( imgMBR ) , 3 );
+    %figure;  imshowscale( abs( imgMBR ) , 3 );
     figure;  imshowscale( abs( imgSpiritReg ) , 3 );
     disp( 'I got here' );
   end

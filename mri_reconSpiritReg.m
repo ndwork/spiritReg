@@ -1,11 +1,16 @@
 
-function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
-  % img = mri_reconSpiritReg( kData, sACR, wSize [, 'lambda', lambda, 'sigma', sigma, 'sMaps', sMaps ] )
+function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
+  % img = mri_reconSpiritReg( kData, sACR, wSize, sMaps [, 'lambda', lambda, 'gamma', gamma ] )
   %
   % minimize || M F S x - b ||_2^2 + lambda || ( W - I ) F S x ||_2^2
   % ... equivalently ...
   % minimize ||  [             M            ] F S x - [ b ] ||
   %          ||  [ sqrt( lambda ) ( W - I ) ]         [ 0 ] ||_2
+  %
+  % OR
+  %
+  % minimize (1/2) || M F S x - b ||_2^2
+  % subject to || ( W - I ) F S x ||_2 <= gamma
   %
   % Inputs:
   % kData - a complex matrix of size M x N x C, where C is the number of coils
@@ -31,7 +36,7 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
 
   if nargin < 3
     disp([ 'Usage: img = mri_reconSpiritReg( kData, sACR, wSize [, ''lambda'', lambda,', ...
-           ' ''sigma'', sigma, ''sMaps'', sMaps ] )' ]);
+           ' ''gamma'', gamma ] )' ]);
     if nargout > 0, img = []; end
     return
   end
@@ -42,22 +47,41 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
 
   p = inputParser;
   p.addParameter( 'doChecks', false );
-  p.addParameter( 'lambda', 0, @isnonnegative );
-  p.addParameter( 'sMaps', [], @isnumeric );
+  p.addParameter( 'lambda', [], @isnonnegative );
+  p.addParameter( 'gamma', [], @isnonnegative );
   p.parse( varargin{:} );
   doChecks = p.Results.doChecks;
   lambda = p.Results.lambda;
-  sMaps = p.Results.sMaps;
+  gamma = p.Results.gamma;
 
-  sImg = size( kData, [ 1 2 ] );
+  sImg = size( kData, [1 2] );
   nCoils = size( kData, 3 );
-  sampleMask = kData ~= 0;
-  nSamples = nnz( sampleMask(:) );  %nnz = number of nonzero elements
 
   acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
-  w = findW( acr, wSize );
+  if numel( gamma ) == 0  &&  numel( lambda ) == 0
+error( 'Not implemented yet' );
+    [w, gamma] = findW( acr, wSize );
+error( 'output gamma from findW' );
+%TODO: output gamma from findW
+  else
+    w = findW( acr, wSize );
+  end
 
-  %-- Use the interpolation coefficients to estimate the missing data
+  if numel( lambda ) == 0, lambda = 0; end
+  if numel( gamma ) == 0, gamma = 0; end
+
+  sampleMask = ( kData ~= 0 );
+  nSamples = nnz( sampleMask );
+
+  function out = applyM( in, op )
+    if nargin < 2  ||  strcmp( op, 'notransp' )
+      out = in( sampleMask == 1 );
+    else
+      out = zeros( [ sImg nCoils ] );
+      out( sampleMask == 1 ) = in;
+    end
+  end
+
   function out = applyW( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       out = zeros( [ sImg nCoils ] );
@@ -74,8 +98,13 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
     end
   end
 
-  sqrtLambda = sqrt( lambda );
-  function out = A_bottom( in, op )
+  if gamma == 0  &&  lambda > 0
+    sqrtLambda = sqrt( lambda );
+  else
+    sqrtLambda = 1;
+  end
+
+  function out = applyWmI( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       out = sqrtLambda * ( applyW( in ) - in );
     else
@@ -83,31 +112,29 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
     end
   end
 
-  function out = A_top( in, op )
+  function out = applyFS( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      out = in( sampleMask == 1 );
+      Sin = bsxfun( @times, sMaps, in );
+      out = fftshift2( fft2( ifftshift2( Sin ) ) );
     else
-      out = zeros( size( kData ) );
-      out( sampleMask == 1 ) = in;
+      FAhIn = fftshift2( fft2h( ifftshift2( in ) ) );
+      out = sum( conj(sMaps) .* FAhIn, 3 );
     end
   end
-
-  if numel( sMaps ) == 0, sMaps = mri_makeSensitivityMaps( kData ); end
 
   function out = applyA( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       in = reshape( in, sImg );
-      fVals = fftshift2( fft2( ifftshift2( bsxfun( @times, sMaps, in ) ) ) );
-      out_top = A_top( fVals );
-      out_bottom = A_bottom( fVals );
-      out = [ out_top(:); out_bottom(:); ];
+      FSin = applyFS( in );
+      MFSin = applyM( FSin );
+      WmIFSin = applyWmI( FSin );
+      out = [ MFSin(:); WmIFSin(:); ];
     else
-      A_top_hIn = A_top( in( 1 : nSamples ), op );
+      MhIn = applyM( in( 1 : nSamples ), op );
       in_bottom = reshape( in(nSamples+1:end), size( kData ) );
-      A_bottom_hIn = A_bottom( in_bottom, op );
-      AhIn = A_top_hIn + A_bottom_hIn;
-      FAhIn = fftshift2( fft2h( ifftshift2( AhIn ) ) );
-      out = sum( bsxfun( @times, conj(sMaps), FAhIn ), 3 );
+      WmIhin_bottom = applyWmI( in_bottom, op );
+      AhIn = MhIn + WmIhin_bottom;
+      out = applyFS( AhIn, 'transp' );
       out = out(:);
     end
   end
@@ -121,18 +148,18 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
       error([ 'Check of W Adjoint failed with error ', num2str(errChkW) ]);
     end
 
-    [chkA_top,errChkA_top] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @A_top );
-    if chkA_top == true
-      disp( 'Check of A_top Adjoint passed' );
+    [chkWmI,errChkWmI] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyWmI );
+    if chkWmI == true
+      disp( 'Check of W minus I Adjoint passed' );
     else
-      error([ 'Check of A_top Adjoint failed with error ', num2str(errChkA_top) ]);
+      error([ 'Check of W minus I Adjoint failed with error ', num2str(errChkWmI) ]);
     end
 
-    [chkA_bottom,errChkA_bottom] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @A_bottom );
-    if chkA_bottom == true
-      disp( 'Check of A_bottom Adjoint passed' );
+    [chkFS,errChkFS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyFS );
+    if chkFS == true
+      disp( 'Check of FS Adjoint passed' );
     else
-      error([ 'Check of A_bottom Adjoint failed with error ', num2str(errChkA_bottom) ]);
+      error([ 'Check of FS Adjoint failed with error ', num2str(errChkFS) ]);
     end
 
     [chkA,errChkA] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyA );
@@ -143,16 +170,19 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, varargin )
     end
   end
 
-  b = [ kData( sampleMask == 1 ); zeros( numel( kData ), 1 ); ];
+  if gamma > 0  &&  lambda == 0
+    img = mri_reconSpiritReg_minOverSphere( kData, gamma, @applyA );
 
-  img0 = zeros( sImg );
-  tol = 1d-6;
-  nMaxIter = 1000;
-  [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( @applyA, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+  elseif gamma == 0  &&  lambda > 0
+    img = mri_reconSpiritReg_tikhonov( kData, @applyA );
 
-  img = reshape( img, sImg );
+  elseif lambda == 0  &&  gamma == 0
+    img = mri_reconModelBased( kData, 'sMaps', sMaps, 'doCheckAdjoint', doChecks );
+
+  else  % lambda > 0  &&  gamma > 0
+    error( 'gamma and lambda cannot both be set.' );
+  end
 end
-
 
 function w = findW( acr, wSize )
   %-- Find the interpolation coefficients w
@@ -183,4 +213,72 @@ function w = findW( acr, wSize )
     w{1,1,1,coilIndx} = reshape( wCoil, [ wSize nCoils ] );
   end
   w = cell2mat( w );
+end
+
+function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA )
+  % minimize (1/2) || M F S x - b ||_2^2
+  % subject to || ( W - I ) F S x ||_2 <= gamma
+
+  f = @(in) 0;
+  proxf = @(in,t) in;
+
+  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + indicator( || in2 ||_2 <= gamma )
+  % g(in1,in2) = g1( in1 ) + g2( in2 );
+
+  b = kData( kData ~= 0 );
+  nSamples = numel( b );
+  g1 = @(in1) 0.5 * norm( in1 - b, 2 ).^2;
+  g2 = @(in2) indicatorFunction( norm( in2, 2 ), [0 gamma] );
+
+  function out = g( in )
+    in1 = in( 1 : nSamples );
+    in2 = in( nSamples + 1 : end );
+    out = g1( in1 ) + g2( in2 );
+  end
+
+  function out = proxg1( in1, t )
+    out = proxL2Sq( in1, t, b );
+  end
+
+  function out = proxg2( in2 )
+    normIn2 = norm( in2(:), 2 );
+    if normIn2 <= gamma
+      out = in2;
+    else
+      out = in2 / normIn2 * gamma;
+    end
+  end
+
+  function out = proxg( in, t )
+    in1 = in( 1 : nSamples );
+    in2 = in( nSamples + 1 : end );
+    out = [ proxg1( in1, t ); proxg2( in2 ); ];
+  end
+
+  proxgConj = @(in,s) proxConj( @proxg, in, s );
+
+  sImg = size( kData, [1 2] );
+  img0 = zeros( sImg );
+
+  normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
+  tau = 1 / normA;
+
+  verbose = true;
+  [img, objValues, relDiffs] = pdhg( img0(:), proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', @g, ...
+    'N', 1000, 'normA', normA, 'printEvery', 10, 'verbose', verbose );   %#ok<ASGLU>
+  img = reshape( img, sImg );  % TODO: Do we need this line?
+end
+
+function img = mri_reconSpiritReg_tikhonov( kData, applyA )
+
+  sImg = size( kData, [ 1 2 ] );
+
+  b = [ kData( kData ~= 0 ); zeros( numel( kData ), 1 ); ];
+
+  img0 = zeros( sImg );
+  tol = 1d-6;
+  nMaxIter = 1000;
+  [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( applyA, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+
+  img = reshape( img, sImg );
 end
