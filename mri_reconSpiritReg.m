@@ -32,7 +32,9 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % implied warranties of merchantability or fitness for a particular
   % purpose.
 
-  %TODO: Convert spirit regularization to a spirit bound
+%TODO: have findW return a value for gamma
+%TODO: have findW return a value of gamma for each coil
+%TODO: replace pdhgWLS with gPDHG_wLS
 
   if nargin < 3
     disp([ 'Usage: img = mri_reconSpiritReg( kData, sACR, wSize [, ''lambda'', lambda,', ...
@@ -215,9 +217,14 @@ function w = findW( acr, wSize )
   w = cell2mat( w );
 end
 
-function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA )
+function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin )
   % minimize (1/2) || M F S x - b ||_2^2
   % subject to || ( W - I ) F S x ||_2 <= gamma
+
+  p = inputParser;
+  p.addParameter( 'optAlg', 'pdhgWLS', @(x) true );
+  p.parse( varargin{:} );
+  optAlg = p.Results.optAlg;
 
   f = @(in) 0;
   proxf = @(in,t) in;
@@ -260,12 +267,25 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA )
   sImg = size( kData, [1 2] );
   img0 = zeros( sImg );
 
-  normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
+  %normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
+load( 'normA.mat', 'normA' );
   tau = 1 / normA;
 
   verbose = true;
-  [img, objValues, relDiffs] = pdhg( img0(:), proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', @g, ...
-    'N', 1000, 'normA', normA, 'printEvery', 10, 'verbose', verbose );   %#ok<ASGLU>
+
+  % [xStar,objValues] = pdhgWLS( x, proxf, proxgConj [, ...
+  %   'N', N, 'A', A, 'beta', beta, 'f', f, 'g', g, 'mu', mu, 'tau', tau, ...
+  %   'theta', theta, 'y', y, 'verbose', verbose ] )
+
+  if strcmp( optAlg, 'pdhg' )
+    [img, objValues, relDiffs] = pdhg( img0(:), proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', @g, ...
+      'N', 1000, 'normA', normA, 'printEvery', 10, 'verbose', verbose );   %#ok<ASGLU>
+  elseif strcmp( optAlg, 'pdhgWLS' )
+    [img, objValues] = pdhgWLS( img0(:), proxf, proxgConj, 'A', applyA, 'tau', tau, ...
+      'f', f, 'g', @g, 'verbose', verbose );   %#ok<ASGLU>
+  else
+    error( 'Unrecognized optimization algorithm' );
+  end
   img = reshape( img, sImg );  % TODO: Do we need this line?
 end
 
