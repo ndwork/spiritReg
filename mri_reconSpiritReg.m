@@ -10,7 +10,8 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % OR
   %
   % minimize (1/2) || M F S x - b ||_2^2
-  % subject to || ( W - I ) F S x ||_2 <= gamma
+  % subject to || ( W - I ) F S x ||_2 / N <= gamma
+  %   where N is the number of elements in kData
   %
   % Inputs:
   % kData - a complex matrix of size M x N x C, where C is the number of coils
@@ -32,7 +33,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % implied warranties of merchantability or fitness for a particular
   % purpose.
 
-%TODO: have findW return a value for gamma
 %TODO: have findW return a value of gamma for each coil
 %TODO: replace pdhgWLS with gPDHG_wLS
 
@@ -59,16 +59,11 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   sImg = size( kData, [1 2] );
   nCoils = size( kData, 3 );
 
-  acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
-  if numel( gamma ) == 0  &&  numel( lambda ) == 0
-error( 'Not implemented yet' );
-    [w, gamma] = findW( acr, wSize );
-error( 'output gamma from findW' );
-%TODO: output gamma from findW
+  if numel( lambda ) == 0  &&  numel( gamma ) == 0
+    doFindGamma = true;
   else
-    w = findW( acr, wSize );
+    doFindGamma = false;
   end
-
   if numel( lambda ) == 0, lambda = 0; end
   if numel( gamma ) == 0, gamma = 0; end
 
@@ -84,23 +79,31 @@ error( 'output gamma from findW' );
     end
   end
 
+  acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
+  if doFindGamma == true
+    [w, gamma] = findW( acr, wSize );
+  else
+    w = findW( acr, wSize );
+  end
+
+  sW = sImg;
   function out = applyW( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      out = zeros( [ sImg nCoils ] );
-      for c = 1 : nCoils
+      out = zeros( [ sW, nCoils ] );
+      for c = 1 : nCoils  % TODO: vectorize this loop
         tmp = circConv2( flipDims( w(:,:,:,c), 'dims', [1 2] ), in );
         out(:,:,c) = sum( tmp, 3 );
       end
     else
-      out = zeros( [ sImg nCoils ] );
-      for c = 1 : nCoils
+      out = zeros( [ sW nCoils ] );
+      for c = 1 : nCoils  % TODO: vectorize this loop
         tmp = repmat( in(:,:,c), [ 1 1 nCoils ] );
         out = out + circConv2( flipDims( w(:,:,:,c), 'dims', [1 2] ), tmp, 'transp' );
       end
     end
   end
 
-  if gamma == 0  &&  lambda > 0
+  if lambda > 0
     sqrtLambda = sqrt( lambda );
   else
     sqrtLambda = 1;
@@ -113,6 +116,10 @@ error( 'output gamma from findW' );
       out = sqrtLambda * ( applyW( in, 'transp' ) - in );
     end
   end
+
+  % || x || = sqrt( x_1^2 + x_2^2 + ... + x_N^2 )
+  % || x ||^2 = x_1^2 + x_2^2 + ... + x_N^2
+
 
   function out = applyFS( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
@@ -186,13 +193,15 @@ error( 'output gamma from findW' );
   end
 end
 
-function w = findW( acr, wSize )
+function [w, gamma] = findW( acr, wSize )
   %-- Find the interpolation coefficients w
   sACR = size( acr );
   nCoils= sACR( 3 );
 
   w = cell( 1, 1, 1, nCoils );
-  parfor coilIndx = 1 : nCoils
+  if nargout > 1, gammasSq = zeros( nCoils, 1 ); end
+  %parfor coilIndx = 1 : nCoils
+for coilIndx = 1 : nCoils
     A = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), ...
                   wSize(1) * wSize(2) * nCoils - 1 );   %#ok<PFBNS>
     if size( A, 1 ) < size( A, 2 ), error( 'The size of the ACR is too small for this size kernel' ); end
@@ -211,15 +220,21 @@ function w = findW( acr, wSize )
       end
     end
     wCoil = A \ b(:);
+    if nargout > 1
+      gammasSq( coilIndx ) = norm( A * wCoil - b )^2 / numel( wCoil );
+    end
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w{1,1,1,coilIndx} = reshape( wCoil, [ wSize nCoils ] );
   end
   w = cell2mat( w );
+
+  if nargout > 1, gamma = sqrt( sum( gammasSq ) / nCoils ); end
 end
 
 function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin )
   % minimize (1/2) || M F S x - b ||_2^2
-  % subject to || ( W - I ) F S x ||_2 <= gamma
+  % subject to || ( W - I ) F S x ||_2 / N <= gamma
+  %   where N is the number of elements in kData
 
   p = inputParser;
   p.addParameter( 'optAlg', 'pdhgWLS', @(x) true );
@@ -229,13 +244,14 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin 
   f = @(in) 0;
   proxf = @(in,t) in;
 
-  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + indicator( || in2 ||_2 <= gamma )
+  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + indicator( || in2 ||_2 / N <= gamma )
   % g(in1,in2) = g1( in1 ) + g2( in2 );
 
   b = kData( kData ~= 0 );
   nSamples = numel( b );
+  nKData = numel( kData );
   g1 = @(in1) 0.5 * norm( in1 - b, 2 ).^2;
-  g2 = @(in2) indicatorFunction( norm( in2, 2 ), [0 gamma] );
+  g2 = @(in2) indicatorFunction( norm( in2, 2 ) / nKData, [0 gamma] );
 
   function out = g( in )
     in1 = in( 1 : nSamples );
@@ -249,10 +265,10 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin 
 
   function out = proxg2( in2 )
     normIn2 = norm( in2(:), 2 );
-    if normIn2 <= gamma
+    if normIn2 / nKData <= gamma
       out = in2;
     else
-      out = in2 / normIn2 * gamma;
+      out = ( gamma * nKData / normIn2 ) * in2;
     end
   end
 
