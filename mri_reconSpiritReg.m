@@ -199,9 +199,8 @@ function [w, gamma] = findW( acr, wSize )
   nCoils= sACR( 3 );
 
   w = cell( 1, 1, 1, nCoils );
-  if nargout > 1, gammasSq = zeros( nCoils, 1 ); end
-  %parfor coilIndx = 1 : nCoils
-for coilIndx = 1 : nCoils
+  gammasSq = zeros( nCoils, 1 );
+  parfor coilIndx = 1 : nCoils
     A = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), ...
                   wSize(1) * wSize(2) * nCoils - 1 );   %#ok<PFBNS>
     if size( A, 1 ) < size( A, 2 ), error( 'The size of the ACR is too small for this size kernel' ); end
@@ -220,15 +219,13 @@ for coilIndx = 1 : nCoils
       end
     end
     wCoil = A \ b(:);
-    if nargout > 1
-      gammasSq( coilIndx ) = norm( A * wCoil - b )^2 / numel( wCoil );
-    end
+    gammasSq( coilIndx ) = norm( A * wCoil - b )^2 / ( numel(b) * numel( wCoil ) );
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w{1,1,1,coilIndx} = reshape( wCoil, [ wSize nCoils ] );
   end
   w = cell2mat( w );
 
-  if nargout > 1, gamma = sqrt( sum( gammasSq ) / nCoils ); end
+  gamma = sqrt( sum( gammasSq ) / nCoils );
 end
 
 function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin )
