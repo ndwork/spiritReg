@@ -10,7 +10,7 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % OR
   %
   % minimize (1/2) || M F S x - b ||_2^2
-  % subject to || ( W - I ) F S x ||_2 / N <= gamma
+  % subject to || ( W - I ) F S x ||_2^2 / N <= gamma
   %   where N is the number of elements in kData
   %
   % Inputs:
@@ -219,18 +219,18 @@ function [w, gamma] = findW( acr, wSize )
       end
     end
     wCoil = A \ b(:);
-    gammasSq( coilIndx ) = norm( A * wCoil - b )^2 / ( numel(b) * numel( wCoil ) );
+    gammasSq( coilIndx ) = norm( A * wCoil - b )^2 / numel(b);
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w{1,1,1,coilIndx} = reshape( wCoil, [ wSize nCoils ] );
   end
   w = cell2mat( w );
 
-  gamma = sqrt( sum( gammasSq ) / nCoils );
+  gamma = sum( gammasSq ) / nCoils;
 end
 
 function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin )
   % minimize (1/2) || M F S x - b ||_2^2
-  % subject to || ( W - I ) F S x ||_2 / N <= gamma
+  % subject to || ( W - I ) F S x ||_2^2 / N <= gamma
   %   where N is the number of elements in kData
 
   p = inputParser;
@@ -241,14 +241,14 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin 
   f = @(in) 0;
   proxf = @(in,t) in;
 
-  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + indicator( || in2 ||_2 / N <= gamma )
+  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + indicator( || in2 ||_2^2 / N <= gamma )
   % g(in1,in2) = g1( in1 ) + g2( in2 );
 
   b = kData( kData ~= 0 );
   nSamples = numel( b );
   nKData = numel( kData );
   g1 = @(in1) 0.5 * norm( in1 - b, 2 ).^2;
-  g2 = @(in2) indicatorFunction( norm( in2, 2 ) / nKData, [0 gamma] );
+  g2 = @(in2) indicatorFunction( norm( in2, 2 )^2 / nKData, [0 gamma] );
 
   function out = g( in )
     in1 = in( 1 : nSamples );
@@ -261,11 +261,13 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin 
   end
 
   function out = proxg2( in2 )
+    % indicator( || in2 ||_2^2 / N <= gamma ) is equivalent to
+    % || in2 ||_2 <= sqrt( gamma * N )
     normIn2 = norm( in2(:), 2 );
-    if normIn2 / nKData <= gamma
+    if normIn2 <= sqrt( gamma * nKData )
       out = in2;
     else
-      out = ( gamma * nKData / normIn2 ) * in2;
+      out = ( sqrt( gamma * nKData ) / normIn2 ) * in2;
     end
   end
 
