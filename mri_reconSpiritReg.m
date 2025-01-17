@@ -13,6 +13,12 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % subject to || ( W - I ) F S x ||_2^2 / N <= gamma
   %   where N is the number of elements in kData
   %
+  % OR
+  %
+  % minimize (1/2) || M F S x - b ||_2^2
+  % subject to || ( W - I ) F S(c) x ||_2^2 / nPix <= gamma(c) for all c = 1, 2, ... C
+  %   where nPix is the number of pixels in the image
+  %
   % Inputs:
   % kData - a complex matrix of size M x N x C, where C is the number of coils
   %   Uncollected data will have a value of 0.
@@ -20,6 +26,12 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   %  If it's a scalar, then the size is assumed to be [ sACR sACR ].
   % wSize - either a scalar or a two element array of odd vlaues that specifies the size of the interpolation 
   %   kernel.  If wSize is a scalar, then the kernel is assumed to have size [ wSize wSize ].
+  %
+  % Optional Inputs:
+  % gamma - either empty, a scalar, or an array of nonnegative values (one per coil)
+  %   If nonempty, then this function solves the problem involving gamma
+  % lambda = either empty or a nonnegative scalar.
+  %   If nonempty, then this function solves the problem involving lambda
   %
   % Outputs
   % img - a 2D complex array of size M x N that is the output image.
@@ -33,8 +45,9 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % implied warranties of merchantability or fitness for a particular
   % purpose.
 
-%TODO: have findW return a value of gamma for each coil
 %TODO: replace pdhgWLS with gPDHG_wLS
+%TODO: vectorize the loops in applyW
+%TODO: get sensitivity maps from PISCO
 
   if nargin < 3
     disp([ 'Usage: img = mri_reconSpiritReg( kData, sACR, wSize [, ''lambda'', lambda,', ...
@@ -65,7 +78,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     doFindGamma = false;
   end
   if numel( lambda ) == 0, lambda = 0; end
-  if numel( gamma ) == 0, gamma = 0; end
 
   sampleMask = ( kData ~= 0 );
   nSamples = nnz( sampleMask );
@@ -84,6 +96,12 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     [w, gamma] = findW( acr, wSize );
   else
     w = findW( acr, wSize );
+  end
+
+  if numel( gamma ) == 0
+    gamma = zeros( nCoils, 1 );
+  elseif isscalar( gamma )
+    gamma = gamma * ones( nCoils, 1 );
   end
 
   sW = sImg;
@@ -116,10 +134,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
       out = sqrtLambda * ( applyW( in, 'transp' ) - in );
     end
   end
-
-  % || x || = sqrt( x_1^2 + x_2^2 + ... + x_N^2 )
-  % || x ||^2 = x_1^2 + x_2^2 + ... + x_N^2
-
 
   function out = applyFS( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
@@ -179,27 +193,28 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     end
   end
 
-  if gamma > 0  &&  lambda == 0
+  maxGamma = max( gamma );
+  if maxGamma > 0  &&  lambda == 0
     img = mri_reconSpiritReg_minOverSphere( kData, gamma, @applyA );
 
-  elseif gamma == 0  &&  lambda > 0
+  elseif maxGamma == 0  &&  lambda > 0
     img = mri_reconSpiritReg_tikhonov( kData, @applyA );
 
-  elseif lambda == 0  &&  gamma == 0
+  elseif lambda == 0  &&  maxGamma == 0
     img = mri_reconModelBased( kData, 'sMaps', sMaps, 'doCheckAdjoint', doChecks );
 
-  else  % lambda > 0  &&  gamma > 0
+  else  % lambda > 0  &&  maxGamma > 0
     error( 'gamma and lambda cannot both be set.' );
   end
 end
 
-function [w, gamma] = findW( acr, wSize )
+function [w, gammas] = findW( acr, wSize )
   %-- Find the interpolation coefficients w
   sACR = size( acr );
-  nCoils= sACR( 3 );
+  nCoils = sACR( 3 );
 
   w = cell( 1, 1, 1, nCoils );
-  gammasSq = zeros( nCoils, 1 );
+  gammas = zeros( nCoils, 1 );
   parfor coilIndx = 1 : nCoils
     A = zeros( (  sACR(2) - wSize(2) + 1 ) * ( sACR(1) - wSize(1) + 1 ), ...
                   wSize(1) * wSize(2) * nCoils - 1 );   %#ok<PFBNS>
@@ -219,19 +234,18 @@ function [w, gamma] = findW( acr, wSize )
       end
     end
     wCoil = A \ b(:);
-    gammasSq( coilIndx ) = norm( A * wCoil - b )^2 / numel(b);
+    gammas( coilIndx ) = norm( A * wCoil - b )^2 / numel(b);
     wCoil = [ wCoil( 1 : pt2RemoveIndx - 1 ); 0; wCoil( pt2RemoveIndx : end ); ];
     w{1,1,1,coilIndx} = reshape( wCoil, [ wSize nCoils ] );
   end
   w = cell2mat( w );
-
-  gamma = sum( gammasSq ) / nCoils;
+  %gammas = mean( gammas ) / nCoils;
 end
 
-function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin )
+function img = mri_reconSpiritReg_minOverSphere( kData, gammas, applyA, varargin )
   % minimize (1/2) || M F S x - b ||_2^2
-  % subject to || ( W - I ) F S x ||_2^2 / N <= gamma
-  %   where N is the number of elements in kData
+  % subject to || ( W - I ) F S(c) x ||_2^2 / nPix <= gamma for each c
+  %   where nPix is the number of pixels in the image
 
   p = inputParser;
   p.addParameter( 'optAlg', 'pdhgWLS', @(x) true );
@@ -241,14 +255,26 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin 
   f = @(in) 0;
   proxf = @(in,t) in;
 
-  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + indicator( || in2 ||_2^2 / N <= gamma )
+  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + sum_c indicator( || in2(:,:,c) ||_Fro^2 / nPix <= gammas(c) )
   % g(in1,in2) = g1( in1 ) + g2( in2 );
 
   b = kData( kData ~= 0 );
   nSamples = numel( b );
-  nKData = numel( kData );
+  sKData = size( kData );
+  nPix = sKData(1) * sKData(2);
+  nCoils = size( kData, 3 );
   g1 = @(in1) 0.5 * norm( in1 - b, 2 ).^2;
-  g2 = @(in2) indicatorFunction( norm( in2, 2 )^2 / nKData, [0 gamma] );
+
+  function out = g2( in2 )
+    in2 = reshape( in2, sKData );
+    for coilIndx = 1 : nCoils
+      if norm( in2(:,:,coilIndx), 'fro' )^2 / nPix > gammas(coilIndx)
+        out = Inf;
+        return
+      end
+    end
+    out = 0;
+  end
 
   function out = g( in )
     in1 = in( 1 : nSamples );
@@ -261,14 +287,20 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gamma, applyA, varargin 
   end
 
   function out = proxg2( in2 )
-    % indicator( || in2 ||_2^2 / N <= gamma ) is equivalent to
-    % || in2 ||_2 <= sqrt( gamma * N )
-    normIn2 = norm( in2(:), 2 );
-    if normIn2 <= sqrt( gamma * nKData )
-      out = in2;
-    else
-      out = ( sqrt( gamma * nKData ) / normIn2 ) * in2;
+    % indicator( || in2 ||_2^2 / nPix <= gammas(coilIndx) ) is equivalent to
+    % indicator( || in2(:,:,coilIndx) ||_Fro <= sqrt( gammas( coilIndx ) * nPix ) )
+    in2 = reshape( in2, sKData );
+    out = zeros( sKData );
+    for coilIndx = 1 : nCoils
+      normIn2Coil = norm( in2(:,:,coilIndx), 'fro' );
+      ballRadius = sqrt( gammas( coilIndx ) * nPix );
+      if normIn2Coil <= ballRadius
+        out(:,:,coilIndx) = in2(:,:,coilIndx);
+      else
+        out(:,:,coilIndx) = ( ballRadius / normIn2Coil ) * in2(:,:,coilIndx);
+      end
     end
+    out = out(:);
   end
 
   function out = proxg( in, t )
@@ -287,10 +319,6 @@ load( 'normA.mat', 'normA' );
   tau = 1 / normA;
 
   verbose = true;
-
-  % [xStar,objValues] = pdhgWLS( x, proxf, proxgConj [, ...
-  %   'N', N, 'A', A, 'beta', beta, 'f', f, 'g', g, 'mu', mu, 'tau', tau, ...
-  %   'theta', theta, 'y', y, 'verbose', verbose ] )
 
   if strcmp( optAlg, 'pdhg' )
     [img, objValues, relDiffs] = pdhg( img0(:), proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', @g, ...
