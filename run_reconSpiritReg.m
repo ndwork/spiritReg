@@ -1,7 +1,7 @@
 function run_reconSpiritReg( datacases )
   close all; rng(1);
 
-  showScale = 3;
+  showScale = 5;
   verbose = true;
   wSize = 5;
   sACR = 19;
@@ -25,6 +25,7 @@ function run_reconSpiritReg( datacases )
     %[ kData, noiseCoords, ~, trueRecon ] = loadDatacase( datacase );
     load( 'stuff.mat', 'kData', 'sampleMask', 'sMaps' );
     kData = squeeze( kData ) / max( abs( kData(:) ) );  % assumes one slice.
+    nCoils = size( kData, 3 );
 
     nSamples = round( sampleFraction * size( kData, 1 ) * size( kData, 2 ) );
     sImg = size( kData, [ 1 2 ] );
@@ -36,15 +37,28 @@ function run_reconSpiritReg( datacases )
     sampleMask = sampleMask | acrMask;
     kSamples = bsxfun( @times, kData, sampleMask );
 
+    acr = cropData( kData, [ sACR sACR nCoils ] );
+    [ sMaps, support ] = callPISCO( acr, sImg );
+
     %sMaps = mri_makeSensitivityMaps( kSamples );
     %img = mri_reconSpirit( kSamples, sACR, wSize );
 
-    %imgMBR = mri_reconModelBased( kData, 'sMaps', sMaps );
-    %imgSpiritReg = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'lambda', 1 );
-    imgSpiritReg = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'gamma', 1 );
+    %imgTrue = mri_reconRoemer( mri_reconIFFT( kData, 'multiSlice', true ), 'sMaps', sMaps );
+    %figure;  imshowscale( abs( imgTrue ), showScale );  titlenice( 'Truth' );
 
-    %figure;  imshowscale( abs( imgMBR ) , 3 );
-    figure;  imshowscale( abs( imgSpiritReg ) , 3 );
+    %imgMBR = mri_reconModelBased( kSamples, 'sMaps', sMaps );
+    %figure;  imshowscale( abs( imgMBR ), showScale );  titlenice( 'MBR' );
+
+    %imgSpirit = mri_reconSpirit( kSamples, sACR, wSize );
+    %figure;  imshowscale( abs( imgSpirit ), showScale );  titlenice( 'Spirit' )
+
+    %imgSpiritRegLam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'lambda', 1 );
+    %figure;  imshowscale( abs( imgSpiritRegLam ), showScale );  titlenice( 'SpiritRegLam' )
+
+    %imgSpiritRegGam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'gamma', 1d-3 / numel( kSamples ) );
+    imgSpiritRegGam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'support', support );
+    figure;  imshowscale( abs( imgSpiritRegGam ), showScale );  titlenice( 'SpiritRegGam' );
+
     disp( 'I got here' );
   end
 end
