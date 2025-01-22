@@ -23,7 +23,7 @@ function run_reconSpiritReg( datacases )
     disp([ 'Working on datacase ', indx2str( datacase, max( datacases ) ) ]);
 
     %[ kData, noiseCoords, ~, trueRecon ] = loadDatacase( datacase );
-    load( 'stuff.mat', 'kData', 'sampleMask', 'sMaps' );
+    load( 'stuff.mat', 'kData', 'sampleMask', 'sMaps', 'support' );
     kData = squeeze( kData ) / max( abs( kData(:) ) );  % assumes one slice.
     nCoils = size( kData, 3 );
 
@@ -37,14 +37,11 @@ function run_reconSpiritReg( datacases )
     sampleMask = sampleMask | acrMask;
     kSamples = bsxfun( @times, kData, sampleMask );
 
-    acr = cropData( kData, [ sACR sACR nCoils ] );
-    [ sMaps, support ] = callPISCO( acr, sImg );
+    %acr = cropData( kData, [ sACR sACR nCoils ] );
+    %[ sMaps, support ] = callPISCO( acr, sImg );
 
-    %sMaps = mri_makeSensitivityMaps( kSamples );
-    %img = mri_reconSpirit( kSamples, sACR, wSize );
-
-    %imgTrue = mri_reconRoemer( mri_reconIFFT( kData, 'multiSlice', true ), 'sMaps', sMaps );
-    %figure;  imshowscale( abs( imgTrue ), showScale );  titlenice( 'Truth' );
+    imgTrue = mri_reconRoemer( mri_reconIFFT( kData, 'multiSlice', true ), 'sMaps', sMaps );
+    figure;  imshowscale( abs( imgTrue ), showScale );  titlenice( 'Truth' );
 
     %imgMBR = mri_reconModelBased( kSamples, 'sMaps', sMaps );
     %figure;  imshowscale( abs( imgMBR ), showScale );  titlenice( 'MBR' );
@@ -52,7 +49,7 @@ function run_reconSpiritReg( datacases )
     %imgSpirit = mri_reconSpirit( kSamples, sACR, wSize );
     %figure;  imshowscale( abs( imgSpirit ), showScale );  titlenice( 'Spirit' )
 
-    %imgSpiritRegLam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'lambda', 1 );
+    %imgSpiritRegLam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'lambda', 0 );
     %figure;  imshowscale( abs( imgSpiritRegLam ), showScale );  titlenice( 'SpiritRegLam' )
 
     %imgSpiritRegGam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'gamma', 1d-3 / numel( kSamples ) );

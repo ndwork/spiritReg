@@ -1,23 +1,25 @@
 
 function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
-  % img = mri_reconSpiritReg( kData, sACR, wSize, sMaps [, 'gamma', gamma, 
-  %   'support', support, 'lambda', lambda ] )
+  % img = mri_reconSpiritReg( kData, sACR, wSize, sMaps [ ,
+  %   'gamma', gamma, 'support', support, 'lambda', lambda ] )
   %
-  % minimize || M F S PT x - b ||_2^2 + lambda || ( W - I ) F S x ||_2^2
+  % minimize || M F S PT x - b ||_2^2 + lambda || ( W - I ) F S PT x ||_2^2
+  %
   % ... equivalently ...
-  % minimize ||  [             M            ] F S x - [ b ] ||
-  %          ||  [ sqrt( lambda ) ( W - I ) ]         [ 0 ] ||_2
+  %
+  % minimize ||  [             M            ] F S PT x - [ b ] ||
+  %          ||  [ sqrt( lambda ) ( W - I ) ]            [ 0 ] ||_2
   %
   % OR
   %
   % minimize (1/2) || M F S PT x - b ||_2^2
-  % subject to || ( W - I ) F S x ||_2^2 / N <= gamma
+  % subject to || ( W - I ) F S PT x ||_2^2 / N <= gamma
   %   where N is the number of elements in kData
   %
   % OR
   %
   % minimize (1/2) || M F S PT x - b ||_2^2
-  % subject to || ( W - I ) F S(c) x ||_2^2 / nPix <= gamma(c) for all c = 1, 2, ... C
+  % subject to || ( W - I ) F S(c) PT x ||_2^2 / nPix <= gamma(c) for all c = 1, 2, ... C
   %   where nPix is the number of pixels in the image
   %
   % Inputs:
@@ -47,13 +49,11 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % purpose.
 
 %TODO: replace pdhgWLS with gPDHG_wLS
-%TODO: vectorize the loops in applyW
-%TODO: add non-rectangular FOV
-%TODO: add preconditioning
+%TODO: add compressed sensing
 
-  if nargin < 3
-    disp([ 'Usage: img = mri_reconSpiritReg( kData, sACR, wSize [, ''lambda'', lambda,', ...
-           ' ''gamma'', gamma ] )' ]);
+  if nargin < 4
+    disp([ 'Usage: img = mri_reconSpiritReg( kData, sACR, wSize, sMaps [, ' ...
+           ' ''gamma'', gamma, ''support'', support ''lambda'', lambda )' ]);
     if nargout > 0, img = []; end
     return
   end
@@ -76,16 +76,12 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   sImg = size( kData, [1 2] );
   nCoils = size( kData, 3 );
 
-  if numel( lambda ) == 0  &&  numel( gamma ) == 0
-    doFindGamma = true;
-  else
-    doFindGamma = false;
+  if numel( lambda ) > 0  &&  numel( gamma ) > 0
+    error( 'You cannot specify both lambda and gamma.' );
   end
-  if numel( lambda ) == 0, lambda = 0; end
 
   sampleMask = ( kData ~= 0 );
   nSamples = nnz( sampleMask );
-  if numel( support ) > 0, nSupport = sum( support(:) ); end
 
   function out = applyM( in, op )
     if nargin < 2  ||  strcmp( op, 'notransp' )
@@ -96,18 +92,89 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     end
   end
 
+  function out = applyFS( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      Sin = bsxfun( @times, sMaps, in );
+      out = fftshift2( fft2( ifftshift2( Sin ) ) );
+    else
+      FAhIn = fftshift2( fft2h( ifftshift2( in ) ) );
+      out = sum( conj(sMaps) .* FAhIn, 3 );
+    end
+  end
+
+  function out = applyP( in, op )
+    if nargin < 2  ||  strcmp( op, 'notransp' )
+      out = in( support == 1 );
+    else
+      out = zeros( sImg );
+      out( support == 1 ) = in;
+    end
+  end
+
+  function out = applyMFSPT( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      if numel( support ) > 0
+        out = applyM( applyFS( applyP( in, 'transp' ) ) );
+      else
+        out = applyM( applyFS( in ) );
+      end
+    else
+      if numel( support ) > 0
+        out = applyP( applyFS( applyM( in, 'transp' ), 'transp' ) );
+      else
+        out = applyFS( applyM( in, 'transp' ), 'transp' );
+      end
+    end
+  end
+
+  if numel( support ) > 0
+    nSupport = sum( support(:) );
+    img0 = zeros( nSupport, 1 );
+  else
+    img0 = zeros( sImg );
+  end
+
+  if doChecks == true
+    [chkFS,errChkFS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyFS );
+    if chkFS == true
+      disp( 'Check of FS Adjoint passed' );
+    else
+      error([ 'Check of FS Adjoint failed with error ', num2str(errChkFS) ]);
+    end
+
+    if numel( support ) > 0
+      [chkMFSPT,errChkMFSPT] = checkAdjoint( rand( nSupport, 1 ) + 1i * rand( nSupport, 1 ), @applyMFSPT );
+    else
+      [chkMFSPT,errChkMFSPT] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyMFSPT );
+    end
+    if chkMFSPT == true
+      disp( 'Check of MFSPT Adjoint passed' );
+    else
+      error([ 'Check of MFSPT Adjoint failed with error ', num2str(errChkMFSPT) ]);
+    end
+  end
+
+  if numel( lambda ) > 0  &&  lambda == 0  && numel( gamma ) == 0
+    b = kData( sampleMask == 1 );
+    tol = 1d-6;
+    nMaxIter = 100;
+    [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
+      @applyMFSPT, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+    return
+  end
+
   acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
-  if doFindGamma == true
+  if numel( lambda ) == 0  &&  numel( gamma ) == 0
     [w, gamma] = findW( acr, wSize );
   else
     w = findW( acr, wSize );
+    if numel( gamma ) == 0
+      gamma = zeros( nCoils, 1 );
+    elseif isscalar( gamma )
+      gamma = gamma * ones( nCoils, 1 );
+    end
   end
-
-  if numel( gamma ) == 0
-    gamma = zeros( nCoils, 1 );
-  elseif isscalar( gamma )
-    gamma = gamma * ones( nCoils, 1 );
-  end
+  if numel( lambda ) == 0, lambda = 0; end
 
   flipW = padData( flipDims( w, 'dims', [1 2] ), [ sImg nCoils nCoils ] );
   function out = applyW( in, op )
@@ -133,33 +200,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     end
   end
 
-  function out = applyP( in, op )
-    if nargin < 2  ||  strcmp( op, 'notransp' )
-      out = in( support == 1 );
-    else
-      out = zeros( sImg );
-      out( support == 1 ) = in;
-    end
-  end
-
-  function out = applyFS( in, op )
-    if nargin < 2 || strcmp( op, 'notransp' )
-      Sin = bsxfun( @times, sMaps, in );
-      out = fftshift2( fft2( ifftshift2( Sin ) ) );
-    else
-      FAhIn = fftshift2( fft2h( ifftshift2( in ) ) );
-      out = sum( conj(sMaps) .* FAhIn, 3 );
-    end
-  end
-
-  function out = applyMFSPT( in, op )
-    if nargin < 2 || strcmp( op, 'notransp' )
-      out = applyM( applyFS( applyP( in, 'transp' ) ) );
-    else
-      out = applyP( applyFS( applyM( in, 'transp' ), 'transp' ) );
-    end
-  end
-
   function out = applyA( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       if numel( support ) > 0
@@ -175,7 +215,7 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
       MhIn = applyM( in( 1 : nSamples ), op );
       in_bottom = reshape( in(nSamples+1:end), size( kData ) );
       WmIhin_bottom = applyWmI( in_bottom, op );
-      AhIn = MhIn + WmIhin_bottom;
+        AhIn = MhIn + WmIhin_bottom;
       out = applyFS( AhIn, 'transp' );
       if numel( support ) > 0
         out = out( support == 1 );
@@ -210,24 +250,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
       end
     end
 
-    [chkFS,errChkFS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyFS );
-    if chkFS == true
-      disp( 'Check of FS Adjoint passed' );
-    else
-      error([ 'Check of FS Adjoint failed with error ', num2str(errChkFS) ]);
-    end
-
-    if numel( support ) > 0
-      [chkMFSPT,errChkMFSPT] = checkAdjoint( rand( nSupport, 1 ) + 1i * rand( nSupport, 1 ), @applyMFSPT );
-    else
-      [chkMFSPT,errChkMFSPT] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyMFSPT );
-    end
-    if chkMFSPT == true
-      disp( 'Check of MFSPT Adjoint passed' );
-    else
-      error([ 'Check of MFSPT Adjoint failed with error ', num2str(errChkMFSPT) ]);
-    end
-
     if numel( support ) > 0
       [chkA,errChkA] = checkAdjoint( rand( nSupport, 1 ) + 1i * rand( nSupport, 1 ), @applyA );
     else
@@ -240,25 +262,12 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     end
   end
 
-  if numel( support ) > 0
-    img0 = zeros( nSupport, 1 );
-  else
-    img0 = zeros( sImg );
-  end
-
   maxGamma = max( gamma );
   if maxGamma > 0  &&  lambda == 0
     img = mri_reconSpiritReg_minOverSphere( kData, gamma, @applyA, img0 );
 
   elseif maxGamma == 0  &&  lambda > 0
     img = mri_reconSpiritReg_tikhonov( kData, @applyA, img0 );
-
-  elseif lambda == 0  &&  maxGamma == 0
-    %img = mri_reconModelBased( kData, 'sMaps', sMaps, 'doCheckAdjoint', doChecks );
-    b = kData( sampleMask == 1 );
-    tol = 1d-6;
-    nMaxIter = 100;
-    [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( applyA, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
 
   else  % lambda > 0  &&  maxGamma > 0
     error( 'gamma and lambda cannot both be set.' );
@@ -339,9 +348,10 @@ function img = mri_reconSpiritReg_minOverSphere( kData, gammas, applyA, img0, va
     out = 0;
   end
 
+  nKData = prod( sKData );
   function out = g( in )
     in1 = in( 1 : nSamples );
-    in2 = in( nSamples + 1 : end );
+    in2 = in( nSamples + 1 : nSamples + nKData );
     out = g1( in1 ) + g2( in2 );
   end
 
