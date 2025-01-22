@@ -112,13 +112,10 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   flipW = padData( flipDims( w, 'dims', [1 2] ), [ sImg nCoils nCoils ] );
   function out = applyW( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      out = sum( circConv2( flipW, in ), 3 );
-      out = squeeze( out );
+      out = squeeze( sum( circConv2( flipW, in ), 3 ) );
     else
-      out = zeros( sImg(1), sImg(2), nCoils );
-      for c = 1 : nCoils
-        out = out + circConv2( flipW(:,:,:,c), in(:,:,c), 'transp' );
-      end
+      in = repmat( reshape( in, [ sImg 1 nCoils ] ), [ 1 1 nCoils, 1] );
+      out = circConv2( flipW, in, 'transp', 'ndimsOut', ndims(kData) );
     end
   end
 
