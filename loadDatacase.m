@@ -135,7 +135,7 @@ function [ data, noiseCoords, res, trueRecon ] = loadDatacase( datacase, varargi
         data = ifft( ifftshift( data, 3 ), [], 3 );
         data = rot90( data(:,:,280,:), -1 );
       end
-      noiseCoords = [ 10 10 80 80 ];
+      noiseCoords = [ 193 1 256 64 ];
       res = 1.0d-3;  % meters per pixel
 
     case 10

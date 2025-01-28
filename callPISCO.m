@@ -4,12 +4,12 @@ function [ senseMaps, eig_mask ] = callPISCO( kCal, dim_sens, varargin )
   p = inputParser;
   p.addParameter( 'M', [], @ispositive );
   p.addParameter( 'PowerIteration_G_nullspace_vectors', 0 );
-  p.addParameter( 'threshold_mask', [], @isnonnegative );
+  p.addParameter( 'supportThresh', [], @ispositive );
   p.addParameter( 'verbose', false );
   p.parse( varargin{:} );
   M = p.Results.M;
   PowerIteration_G_nullspace_vectors = p.Results.PowerIteration_G_nullspace_vectors;
-  threshold_mask = p.Results.threshold_mask;
+  supportThresh = p.Results.supportThresh;
   verbose = p.Results.verbose;
 
   tau = 3; % Kernel radius
@@ -72,8 +72,8 @@ function [ senseMaps, eig_mask ] = callPISCO( kCal, dim_sens, varargin )
   %                        grid and then interpolated to a grid with nominal 
   %                        dimensions using an FFT-approach
 
-  if numel( threshold_mask ) == 0
-    threshold_mask = 0.1;
+  if numel( supportThresh ) == 0
+    supportThresh = 0.3;  % Threshold for the support
   end
 
   if numel( verbose ) == 0
@@ -90,5 +90,5 @@ function [ senseMaps, eig_mask ] = callPISCO( kCal, dim_sens, varargin )
       FFT_interpolation, interp_zp, gauss_win_param, ...
       verbose);
 
-  eig_mask = eigenValues(:,:,end) < threshold_mask;
+  eig_mask = eigenValues(:,:,end) < supportThresh;
 end

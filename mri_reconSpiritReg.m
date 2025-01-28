@@ -1,26 +1,26 @@
 
-function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
-  % img = mri_reconSpiritReg( kData, sACR, wSize, sMaps [ ,
-  %   'gamma', gamma, 'support', support, 'lambda', lambda ] )
+function img = mri_reconSpiritReg( kData, sMaps, varargin )
+  % img = mri_reconSpiritReg( kData, sMaps [ , 'gamma', gamma, 'sACR', sACR, ...
+  %       'support', support, 'verbose', verbose, 'wSize', wSize ] )
   %
-  % minimize || M F S PT x - b ||_2^2 + lambda || ( W - I ) F S PT x ||_2^2
+  % The Data consistency term, by default is Adc = M F S
+  % If a support is supplied, but not a noise bound, then Adc = M F S PT
   %
-  % ... equivalently ...
+  % The problem to solve, without any other parameters, is
+  % minimize || Adc x - b ||_2
   %
-  % minimize ||  [             M            ] F S PT x - [ b ] ||
-  %          ||  [ sqrt( lambda ) ( W - I ) ]            [ 0 ] ||_2
-  %
-  % OR
-  %
-  % minimize (1/2) || M F S PT x - b ||_2^2
-  % subject to || ( W - I ) F S PT x ||_2^2 / N <= gamma
+  % If wSize and sACR are supplied, then the problem is also constrained by
+  % || ( W - I ) F S PT x ||_2^2 / N <= gamma
   %   where N is the number of elements in kData
-  %
   % OR
+  % || ( W - I ) F S(c) PT x ||_2^2 / nImg <= gamma(c) for all c = 1, 2, ... C
+  %   where nImg is the number of pixels in the image and C is the number of coils
+  % By default, gamma is determined automatically as a vector, one value per coil
   %
-  % minimize (1/2) || M F S PT x - b ||_2^2
-  % subject to || ( W - I ) F S(c) PT x ||_2^2 / nPix <= gamma(c) for all c = 1, 2, ... C
-  %   where nPix is the number of pixels in the image
+  % If support is supplied and a noise bound, then the problem is also constrained by
+  % || P_C x ||_2^2 / ( nImg - nSupport ) <= noiseBound
+  %   This is handled similarly to "Parameter-free Parallel Imaging and
+  %   Compressed Sensing" by Tamir et al. ISMRM, 2018
   %
   % Inputs:
   % kData - a complex matrix of size M x N x C, where C is the number of coils
@@ -33,8 +33,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % Optional Inputs:
   % gamma - either empty, a scalar, or an array of nonnegative values (one per coil)
   %   If nonempty, then this function solves the problem involving gamma
-  % lambda = either empty or a nonnegative scalar.
-  %   If nonempty, then this function solves the problem involving lambda
   %
   % Outputs
   % img - a 2D complex array of size M x N that is the output image.
@@ -48,40 +46,65 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
   % implied warranties of merchantability or fitness for a particular
   % purpose.
 
-%TODO: replace pdhgWLS with gPDHG_wLS
-%TODO: add compressed sensing
+% TODO: take a different noise bound into account for each coil
+% TODO: add in compressed sensing
 
-  if nargin < 4
-    disp([ 'Usage: img = mri_reconSpiritReg( kData, sACR, wSize, sMaps [, ' ...
-           ' ''gamma'', gamma, ''support'', support ''lambda'', lambda )' ]);
+  if nargin < 2
+    disp([ 'Usage: img = mri_reconSpiritReg( kData, sMaps [, ' ...
+           ' ''gamma'', gamma, ''sACR'', sACR, ''support'', support, ' ...
+           ' ''verbose'', verbose, ''wSize'', wSize ] )' ]);
     if nargout > 0, img = []; end
     return
   end
 
-  if min( mod( wSize, 2 ) ) < 1, error( 'wSize elements must be odd' ); end
-  if isscalar( sACR ), sACR = [ sACR sACR ]; end
-  if isscalar( wSize ), wSize = [ wSize wSize ]; end
-
   p = inputParser;
   p.addParameter( 'doChecks', false );
   p.addParameter( 'gamma', [], @isnonnegative );
-  p.addParameter( 'lambda', [], @isnonnegative );
+  p.addParameter( 'noiseBound', [], @isnonnegative );
+  p.addParameter( 'optAlg', [], @(x) true );
+  p.addParameter( 'sACR', [], @ispositive );
   p.addParameter( 'support', [], @(x) isnumeric(x) || islogical(x) );
+  p.addParameter( 'verbose', true );
+  p.addParameter( 'wSize', [], @ispositive );
   p.parse( varargin{:} );
   doChecks = p.Results.doChecks;
   gamma = p.Results.gamma;
-  lambda = p.Results.lambda;
+  noiseBound = p.Results.noiseBound;
+  optAlg = p.Results.optAlg;
+  sACR = p.Results.sACR;
   support = p.Results.support;
+  verbose = p.Results.verbose;
+  wSize = p.Results.wSize;
 
-  sImg = size( kData, [1 2] );
-  nCoils = size( kData, 3 );
-
-  if numel( lambda ) > 0  &&  numel( gamma ) > 0
-    error( 'You cannot specify both lambda and gamma.' );
+  if numel( wSize ) > 0  &&  numel( sACR ) == 0
+    error( 'Must supply sACR if you supply wSize' );
   end
+  if isscalar( sACR ), sACR = [ sACR sACR ]; end
+  if isscalar( wSize ), wSize = [ wSize wSize ]; end
+  if min( mod( wSize, 2 ) ) < 1, error( 'wSize elements must be odd' ); end
+
+  sKData = size( kData );
+  nKData = numel( kData );
+  sImg = sKData(1:2);
+  nCoils = size( kData, 3 );
+  nImg = prod( sImg );
 
   sampleMask = ( kData ~= 0 );
-  nSamples = nnz( sampleMask );
+  b = kData( sampleMask == 1 );
+  nb = numel( b );
+
+  img0 = zeros( sImg );
+  nSupport = nImg;
+  if numel( support ) > 0
+    nSupport = sum( support(:) );
+    if ( numel( noiseBound ) == 0  ||  noiseBound == 0 )
+      img0 = img0( support ~= 0 );
+    end
+  end
+  sImg0 = size( img0 );
+  nImg0 = numel( img0 );
+
+  %% Create linear transformations and their adjoints
 
   function out = applyM( in, op )
     if nargin < 2  ||  strcmp( op, 'notransp' )
@@ -89,16 +112,6 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     else
       out = zeros( [ sImg nCoils ] );
       out( sampleMask == 1 ) = in;
-    end
-  end
-
-  function out = applyFS( in, op )
-    if nargin < 2 || strcmp( op, 'notransp' )
-      Sin = bsxfun( @times, sMaps, in );
-      out = fftshift2( fft2( ifftshift2( Sin ) ) );
-    else
-      FAhIn = fftshift2( fft2h( ifftshift2( in ) ) );
-      out = sum( conj(sMaps) .* FAhIn, 3 );
     end
   end
 
@@ -111,72 +124,50 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     end
   end
 
-  function out = applyMFSPT( in, op )
+  function out = applyFS( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      if numel( support ) > 0
-        out = applyM( applyFS( applyP( in, 'transp' ) ) );
-      else
-        out = applyM( applyFS( in ) );
+      if numel( img0 ) ~= nImg
+        in = applyP( in, 'transp' );
       end
+      Sin = bsxfun( @times, sMaps, in );
+      out = fftshift2( fft2( ifftshift2( Sin ) ) );
     else
-      if numel( support ) > 0
-        out = applyP( applyFS( applyM( in, 'transp' ), 'transp' ) );
-      else
-        out = applyFS( applyM( in, 'transp' ), 'transp' );
+      FAhIn = fftshift2( fft2h( ifftshift2( in ) ) );
+      out = sum( conj(sMaps) .* FAhIn, 3 );
+      if numel( img0 ) ~= nImg
+        out = applyP( out, 'notransp' );
       end
     end
   end
 
-  if numel( support ) > 0
-    nSupport = sum( support(:) );
-    img0 = zeros( nSupport, 1 );
-  else
-    img0 = zeros( sImg );
-  end
-
-  if doChecks == true
-    [chkFS,errChkFS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyFS );
-    if chkFS == true
-      disp( 'Check of FS Adjoint passed' );
+  function out = applyMFS( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = applyM( applyFS( in ) );
     else
-      error([ 'Check of FS Adjoint failed with error ', num2str(errChkFS) ]);
-    end
-
-    if numel( support ) > 0
-      [chkMFSPT,errChkMFSPT] = checkAdjoint( rand( nSupport, 1 ) + 1i * rand( nSupport, 1 ), @applyMFSPT );
-    else
-      [chkMFSPT,errChkMFSPT] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyMFSPT );
-    end
-    if chkMFSPT == true
-      disp( 'Check of MFSPT Adjoint passed' );
-    else
-      error([ 'Check of MFSPT Adjoint failed with error ', num2str(errChkMFSPT) ]);
+      out = applyFS( applyM( in, op ), op );
     end
   end
 
-  if numel( lambda ) > 0  &&  lambda == 0  && numel( gamma ) == 0
-    b = kData( sampleMask == 1 );
-    tol = 1d-6;
-    nMaxIter = 100;
-    [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
-      @applyMFSPT, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
-    return
+  function out = apply_vMFS( in, op )
+    % vectorized version of applyMFS
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = applyMFS( reshape( in, sImg0 ) );
+    else
+      out = applyMFS( in, 'transp' );
+      out = out(:);
+    end
   end
 
-  acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
-  if numel( lambda ) == 0  &&  numel( gamma ) == 0
-    [w, gamma] = findW( acr, wSize );
-  else
-    w = findW( acr, wSize );
+  if numel( wSize ) > 0
+    acr = cropData( kData, [ sACR(1) sACR(2) nCoils ] );
     if numel( gamma ) == 0
-      gamma = zeros( nCoils, 1 );
+      [w, gamma] = findW( acr, wSize );
     elseif isscalar( gamma )
       gamma = gamma * ones( nCoils, 1 );
     end
+    flipW = padData( flipDims( w, 'dims', [1 2] ), [ sImg nCoils nCoils ] );
   end
-  if numel( lambda ) == 0, lambda = 0; end
 
-  flipW = padData( flipDims( w, 'dims', [1 2] ), [ sImg nCoils nCoils ] );
   function out = applyW( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       out = squeeze( sum( circConv2( flipW, in ), 3 ) );
@@ -186,62 +177,59 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
     end
   end
 
-  if lambda > 0
-    sqrtLambda = sqrt( lambda );
-  else
-    sqrtLambda = 1;
-  end
-
   function out = applyWmI( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      out = sqrtLambda * ( applyW( in ) - in );
+      out = applyW( in ) - in;
     else
-      out = sqrtLambda * ( applyW( in, 'transp' ) - in );
+      out = applyW( in, 'transp' ) - in;
     end
   end
 
-  function out = applyA( in, op )
+  function out = applyWmIFS( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      if numel( support ) > 0
-        in = applyP( in, 'transp' );
-      else
-        in = reshape( in, sImg );
-      end
+      FSin = applyFS( in );
+      out = applyW( FSin ) - FSin;
+    else
+      out = applyFS( applyW( in, 'transp' ) - in, 'transp' );
+    end
+  end
+
+  function out = concatMFSWmIFS( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
       FSin = applyFS( in );
       MFSin = applyM( FSin );
       WmIFSin = applyWmI( FSin );
       out = [ MFSin(:); WmIFSin(:); ];
     else
-      MhIn = applyM( in( 1 : nSamples ), op );
-      in_bottom = reshape( in(nSamples+1:end), size( kData ) );
-      WmIhin_bottom = applyWmI( in_bottom, op );
-        AhIn = MhIn + WmIhin_bottom;
-      out = applyFS( AhIn, 'transp' );
-      if numel( support ) > 0
-        out = out( support == 1 );
-      else
-        out = out(:);
-      end
+      n1 = nb;
+      n2 = n1 + nKData;
+      MTin1 = reshape( applyM( in( 1 : n1 ), op ), sKData );
+      WHmIHin3 = reshape( applyWmI( reshape( in( n1+1 : n2 ), sKData ), op ), sKData );
+      out = applyFS( MTin1 + WHmIHin3, op );
     end
   end
 
+  function out = concatMFSIWmIFS( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      FSin = applyFS( in );
+      MFSin = applyM( FSin );
+      WmIFSin = applyWmI( FSin );
+      out = [ MFSin(:); in(:); WmIFSin(:); ];
+    else
+      n1 = nb;
+      n2 = n1 + nImg0;
+      n3 = n2 + nKData;
+      MTin1 = reshape( applyM( in( 1 : n1 ), op ), sKData );
+      in2 = reshape( in( n1+1 : n2 ), sImg0 );
+      WHmIHin3 = reshape( applyWmI( reshape( in( n2+1 : n3 ), sKData ), op ), sKData );
+      out = applyFS( MTin1 + WHmIHin3, op ) + in2;
+    end
+  end
+
+  %% Check the adjoints
+doChecks = true
   if doChecks == true
-    sKData = size( kData );
-    [chkW,errChkW] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyW );
-    if chkW == true
-      disp( 'Check of W Adjoint passed' );
-    else
-      error([ 'Check of W Adjoint failed with error ', num2str(errChkW) ]);
-    end
-
-    [chkWmI,errChkWmI] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyWmI );
-    if chkWmI == true
-      disp( 'Check of W minus I Adjoint passed' );
-    else
-      error([ 'Check of W minus I Adjoint failed with error ', num2str(errChkWmI) ]);
-    end
-
-    if numel( support ) > 0
+    if nImg0 ~= nImg
       [chkP,errChkP] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyP );
       if chkP == true
         disp( 'Check of P Adjoint passed' );
@@ -250,35 +238,224 @@ function img = mri_reconSpiritReg( kData, sACR, wSize, sMaps, varargin )
       end
     end
 
-    if numel( support ) > 0
-      [chkA,errChkA] = checkAdjoint( rand( nSupport, 1 ) + 1i * rand( nSupport, 1 ), @applyA );
+    [chkFS,errChkFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @applyFS );
+    if chkFS == true
+      disp( 'Check of FS Adjoint passed' );
     else
-      [chkA,errChkA] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyA );
+      error([ 'Check of FS Adjoint failed with error ', num2str(errChkFS) ]);
     end
-    if chkA == true
-      disp( 'Check of A Adjoint passed' );
+
+    [chkMFS,errChkMFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @applyMFS );
+    if chkMFS == true
+      disp( 'Check of MFS Adjoint passed' );
     else
-      error([ 'Check of A Adjoint failed with error ', num2str(errChkA) ]);
+      error([ 'Check of MFS Adjoint failed with error ', num2str(errChkMFS) ]);
+    end
+
+    [chk_vMFS,errChk_vMFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @apply_vMFS );
+    if chk_vMFS == true
+      disp( 'Check of MFS Adjoint passed' );
+    else
+      error([ 'Check of MFS Adjoint failed with error ', num2str(errChk_vMFS) ]);
+    end
+
+    if numel( wSize ) > 0
+      [chkW,errChkW] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyW );
+      if chkW == true
+        disp( 'Check of W Adjoint passed' );
+      else
+        error([ 'Check of W Adjoint failed with error ', num2str(errChkW) ]);
+      end
+  
+      [chkWmI,errChkWmI] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyWmI );
+      if chkWmI == true
+        disp( 'Check of W minus I Adjoint passed' );
+      else
+        error([ 'Check of W minus I Adjoint failed with error ', num2str(errChkWmI) ]);
+      end
+
+      [chkWmIFS,errChkWmIFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @applyWmIFS );
+      if chkWmIFS == true
+        disp( 'Check of WmIFS Adjoint passed' );
+      else
+        error([ 'Check of WmIFS Adjoint failed with error ', num2str(errChkWmIFS) ]);
+      end
+
+      [chkMFSIWmIFS,errChkMFSIwWmIFS] = checkAdjoint( ...
+        rand( sImg0 ) + 1i * rand( sImg0 ), @concatMFSIWmIFS );
+      if chkMFSIWmIFS == true
+        disp( 'Check of concatMFSIWmIFS Adjoint passed' );
+      else
+        error([ 'Check of concatMFSIWmIFS Adjoint failed with error ', num2str(errChkMFSIwWmIFS) ]);
+      end
     end
   end
 
-  maxGamma = max( gamma );
-  if maxGamma > 0  &&  lambda == 0
-    img = mri_reconSpiritReg_minOverSphere( kData, gamma, @applyA, img0 );
+  %% Create the functions for the optimization algorithms
 
-  elseif maxGamma == 0  &&  lambda > 0
-    img = mri_reconSpiritReg_tikhonov( kData, @applyA, img0 );
-
-  else  % lambda > 0  &&  maxGamma > 0
-    error( 'gamma and lambda cannot both be set.' );
+  nInDC = nb;
+  function out = gDC( x )
+    out = 0.5 * norm( x - b )^2;
   end
 
-  if numel( support ) > 0
+  prox_gDCH = @(in,t) proxL2Sq( in, t, b );
+
+  if numel( support ) > 0  &&  numel( noiseBound ) > 0  &&  noiseBound > 0
+    nOutSupport = ( nImg - nSupport );
+    rSupportNoiseBall = sqrt( nOutSupport * noiseBound );  
+  end
+
+  nInSupport = nImg0;
+  function out = gSupport( x )
+    outsideSupport = x( support == 0 );
+    out = indicatorFunction( norm( outsideSupport, 'fro' )^2 / nOutSupport, [0 noiseBound] );
+  end
+
+  function out = prox_gSupport( x, t )   %#ok<INUSD>
+    outsideSupport = x( support == 0 );
+    out = x;
+    out( support == 0 ) = projectOntoBall( outsideSupport, rSupportNoiseBall, 2 );
+  end
+
+  gSupportH = [];
+  prox_gSupportH = [];
+  if numel( support ) > 0  &&  numel( noiseBound ) > 0  &&  noiseBound > 0
+    gSupportH = @gSupport;
+    prox_gSupportH = @prox_gSupport;
+  end
+
+  nInSpiritReg = nKData;
+  function out = gSpiritReg( x )
+    x = reshape( x, sKData );
+    for coilIndx = 1 : nCoils
+      if norm( x(:,:,coilIndx), 'fro' )^2 / nImg > gamma(coilIndx)
+        out = Inf;
+        return
+      end
+    end
+    out = 0;
+  end
+
+  function out = prox_gSpiritReg( x, t )   %#ok<INUSD>
+    % indicator( || x ||_2^2 / nImg <= gamma(coilIndx) ) is equivalent to
+    % indicator( || x(:,:,coilIndx) ||_Fro <= sqrt( gamma( coilIndx ) * nImg ) )
+    x = reshape( x, sKData );
+    out = zeros( sKData );
+    for coilIndx = 1 : nCoils
+      normCoilX = norm( x(:,:,coilIndx), 'fro' );
+      ballRadius = sqrt( gamma( coilIndx ) * nImg );
+      if normCoilX <= ballRadius
+        out(:,:,coilIndx) = x(:,:,coilIndx);
+      else
+        out(:,:,coilIndx) = ( ballRadius / normCoilX ) * x(:,:,coilIndx);
+      end
+    end
+    out = out(:);
+  end
+  
+  if numel( gamma ) > 0
+    gSpiritRegH = @gSpiritReg;
+    prox_gSpiritRegH = @prox_gSpiritReg;
+  else
+    gSpiritRegH = [];
+    prox_gSpiritRegH = [];
+  end
+
+  f = [];  proxf = [];
+  g = [];  proxg = [];
+  applyA = [];
+  usePDHG = false;
+  useFISTA = false;
+  % Create f, g, and A so that we are optimizing f(x) + g(Ax)
+  if numel( gSupportH ) > 0  ||  numel( gSpiritRegH ) > 0
+
+    if numel( gSpiritRegH ) > 0 && numel( gSupportH ) > 0
+      usePDHG = true;
+      applyA = @concatMFSIWmIFS;
+      n1 = nInDC;
+      n2 = n1 + nInSupport;
+      n3 = n2 + nInSpiritReg;
+      g = @(in) gDC( in( 1 : n1 ) ) + ...
+                gSupportH( in( n1 + 1 : n2 ) ) + ...
+                gSpiritRegH( in( n2 + 1 : n3 ) );
+      proxg = @(in,t) [ prox_gDCH( in( 1 : n1 ), t ); ...
+                        prox_gSupportH( in( n1 + 1 : n2 ), t ); ...
+                        prox_gSpiritRegH( in( n2 + 1 : n3 ), t ); ];
+
+    elseif numel( gSpiritRegH ) > 0 && numel( gSupportH ) == 0
+      usePDHG = true;
+      applyA = @(in,op) concatMFSWmIFS( in, op );
+      n1 = nInDC;
+      n2 = n1 + nInSpiritReg;
+      g = @(in) gDC( in( 1 : n1 ) ) + ...
+                gSpiritRegH( in ( n1 + 1 : n2 ) );
+      proxg = @(in,t) [ prox_gDCH( in( 1 : n1 ), t ); ...
+                        prox_gSpiritRegH( in( n1 + 1 : n2 ), t ); ];
+
+    elseif numel( gSpiritRegH ) == 0  &&  numel( gSupportH ) > 0
+      useFISTA = true;
+      f = @(in) 0.5 * norm( applyMFS( in ) - b, 'fro' )^2;
+      ATb = applyMFS( b, 'transp' );
+      fGrad = @(in) applyMFS( applyMFS( in ), 'transp' ) - ATb;
+      g = gSupportH;
+      proxg = prox_gSupportH;
+
+    end
+  end
+
+
+  %% Perform the optimization
+
+  if usePDHG == true
+    % use PDHG
+    proxgConj = @(in,s) proxConj( proxg, in, s );
+
+    %normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
+load( 'normA.mat', 'normA' );
+    tau = 1 / normA;
+
+    if numel( optAlg ) == 0, optAlg = 'pdhgWLS'; end
+
+    if strcmp( optAlg, 'pdhg' )
+      [img, objValues, relDiffs] = pdhg( img0, proxf, proxgConj, tau, 'A', applyA_cs, 'f', f, 'g', @g, ...
+        'N', 1000, 'normA', normA, 'printEvery', 10, 'verbose', verbose );   %#ok<ASGLU>
+    elseif strcmp( optAlg, 'pdhgWLS' )
+      [img, objValues] = pdhgWLS( img0, proxf, proxgConj, 'A', applyA, 'tau', tau, ...
+        'f', f, 'g', g, 'verbose', verbose );   %#ok<ASGLU>
+    else
+      error( 'Unrecognized optimization algorithm' );
+    end
+
+  elseif useFISTA == true
+    % use FISTA
+    ATA = @(in) applyMFS( applyMFS( in ), 'transp' );
+    L = powerIteration( ATA, rand( sImg ), 'symmetric', true );
+    t0 = 1 / L;
+    if verbose == true
+      [img,objValues,relDiffs] = fista_wLS( img0, f, fGrad, proxg, 'h', g, 't0', t0, ...
+        'verbose', verbose );   %#ok<ASGLU>
+    else
+      img = fista_wLS( img0, f, fGrad, proxg, 'h', g, 'verbose', verbose );
+    end
+
+  else
+    % use LSQR
+    tol = 1d-6;
+    nMaxIter = 100;
+    [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
+      @apply_vMFS, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+  end
+
+  if nImg0 ~= nImg
     img = applyP( img, 'transp' );
   else
     img = reshape( img, sImg );
   end
+
 end
+
+
+%% SUPPORT FUNCTIONS
 
 function [w, gammas] = findW( acr, wSize )
   %-- Find the interpolation coefficients w
@@ -312,101 +489,4 @@ function [w, gammas] = findW( acr, wSize )
   end
   w = cell2mat( w );
   %gammas = mean( gammas ) / nCoils;
-end
-
-function img = mri_reconSpiritReg_minOverSphere( kData, gammas, applyA, img0, varargin )
-  % minimize (1/2) || M F S x - b ||_2^2
-  % subject to || ( W - I ) F S(c) x ||_2^2 / nPix <= gamma for each c
-  %   where nPix is the number of pixels in the image
-
-  p = inputParser;
-  p.addParameter( 'optAlg', 'pdhgWLS', @(x) true );
-  p.parse( varargin{:} );
-  optAlg = p.Results.optAlg;
-
-  f = @(in) 0;
-  proxf = @(in,t) in;
-
-  % g(in1,in2) = (1/2) || in1 - b ||_2^2 + sum_c indicator( || in2(:,:,c) ||_Fro^2 / nPix <= gammas(c) )
-  % g(in1,in2) = g1( in1 ) + g2( in2 );
-
-  b = kData( kData ~= 0 );
-  nSamples = numel( b );
-  sKData = size( kData );
-  nPix = sKData(1) * sKData(2);
-  nCoils = size( kData, 3 );
-  g1 = @(in1) 0.5 * norm( in1 - b, 2 ).^2;
-
-  function out = g2( in2 )
-    in2 = reshape( in2, sKData );
-    for coilIndx = 1 : nCoils
-      if norm( in2(:,:,coilIndx), 'fro' )^2 / nPix > gammas(coilIndx)
-        out = Inf;
-        return
-      end
-    end
-    out = 0;
-  end
-
-  nKData = prod( sKData );
-  function out = g( in )
-    in1 = in( 1 : nSamples );
-    in2 = in( nSamples + 1 : nSamples + nKData );
-    out = g1( in1 ) + g2( in2 );
-  end
-
-  function out = proxg1( in1, t )
-    out = proxL2Sq( in1, t, b );
-  end
-
-  function out = proxg2( in2 )
-    % indicator( || in2 ||_2^2 / nPix <= gammas(coilIndx) ) is equivalent to
-    % indicator( || in2(:,:,coilIndx) ||_Fro <= sqrt( gammas( coilIndx ) * nPix ) )
-    in2 = reshape( in2, sKData );
-    out = zeros( sKData );
-    for coilIndx = 1 : nCoils
-      normIn2Coil = norm( in2(:,:,coilIndx), 'fro' );
-      ballRadius = sqrt( gammas( coilIndx ) * nPix );
-      if normIn2Coil <= ballRadius
-        out(:,:,coilIndx) = in2(:,:,coilIndx);
-      else
-        out(:,:,coilIndx) = ( ballRadius / normIn2Coil ) * in2(:,:,coilIndx);
-      end
-    end
-    out = out(:);
-  end
-
-  function out = proxg( in, t )
-    in1 = in( 1 : nSamples );
-    in2 = in( nSamples + 1 : end );
-    out = [ proxg1( in1, t ); proxg2( in2 ); ];
-  end
-
-  proxgConj = @(in,s) proxConj( @proxg, in, s );
-
-  sImg = size( kData, [1 2] );
-  %normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
-load( 'normA.mat', 'normA' );
-  tau = 1 / normA;
-
-  verbose = true;
-
-  if strcmp( optAlg, 'pdhg' )
-    [img, objValues, relDiffs] = pdhg( img0(:), proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', @g, ...
-      'N', 1000, 'normA', normA, 'printEvery', 10, 'verbose', verbose );   %#ok<ASGLU>
-  elseif strcmp( optAlg, 'pdhgWLS' )
-    [img, objValues] = pdhgWLS( img0(:), proxf, proxgConj, 'A', applyA, 'tau', tau, ...
-      'f', f, 'g', @g, 'verbose', verbose );   %#ok<ASGLU>
-  else
-    error( 'Unrecognized optimization algorithm' );
-  end
-end
-
-function img = mri_reconSpiritReg_tikhonov( kData, applyA, img0 )
-
-  b = [ kData( kData ~= 0 ); zeros( numel( kData ), 1 ); ];
-
-  tol = 1d-6;
-  nMaxIter = 1000;
-  [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( applyA, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
 end
