@@ -12,7 +12,7 @@ function [ senseMaps, eig_mask ] = callPISCO( kCal, dim_sens, varargin )
   supportThresh = p.Results.supportThresh;
   verbose = p.Results.verbose;
 
-  tau = 3; % Kernel radius
+  tau = 3; % Kernel radius - half ESPIRiT's window size
 
   %threshold = 0.08; % Theshold for C-matrix singular values
   threshold = []; % Theshold for C-matrix singular values
@@ -66,8 +66,8 @@ function [ senseMaps, eig_mask ] = callPISCO( kCal, dim_sens, varargin )
     %                                         to find nullspace vectors of the 
     %                                         G matrices (instead of using SVD)
   end
-  
-  
+
+
   FFT_interpolation = 1; % Sensitivity maps are calculated on a small spatial
   %                        grid and then interpolated to a grid with nominal 
   %                        dimensions using an FFT-approach

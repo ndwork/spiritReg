@@ -23,14 +23,17 @@ function run_reconSpiritReg( datacases )
     disp([ 'Working on datacase ', indx2str( datacase, max( datacases ) ) ]);
 
     %[ kData, noiseCoords, ~, trueRecon ] = loadDatacase( datacase );
-load( 'stuff.mat', 'kData', 'sampleMask', 'noiseCoords' ); 
+load( 'stuff.mat', 'kData', 'sampleMask', 'sampleMaskCS', 'noiseCoords' );
     kData = squeeze( kData ) / max( abs( kData(:) ) );  % assumes one slice.
     nCoils = size( kData, 3 );
 
     nSamples = round( sampleFraction * size( kData, 1 ) * size( kData, 2 ) );
     sImg = size( kData, [ 1 2 ] );
     acrMask = padData( ones( sACR, sACR ), sImg );
-    %sampleMask = mri_makeSampleMask( sImg, nSamples, 'maskType', 'VDPD', 'startMask', acrMask );
+
+    %sampleMaskCS = mri_makeSampleMask( sImg, nSamples, 'maskType', 'VDPD', 'startMask', acrMask );
+    kSamplesCS = bsxfun( @times, kData, sampleMaskCS );
+
     sampleMask = ones( size( kData, [1 2] ) );
     sampleMask(1:3:end,:) = 0;
     sampleMask(2:3:end,:) = 0;
@@ -38,15 +41,21 @@ load( 'stuff.mat', 'kData', 'sampleMask', 'noiseCoords' );
     sampleMask = sampleMask | acrMask;
     kSamples = bsxfun( @times, kData, sampleMask );
 
+    disp([ 'Sample burden without CS: ', num2str( sum(sampleMask(:)) / numel( sampleMask(:) ) ) ]);
+    disp([ 'Sample burden with CS: ', num2str( sum(sampleMaskCS(:)) / numel( sampleMaskCS(:) ) ) ]);
+
     acr = cropData( kSamples, [ sACR sACR nCoils ] );
     [ sMaps, support ] = callPISCO( acr, sImg );
-    figure;  imshowscale( support, showScale );
+    %figure;  imshowscale( support, showScale );
 
     imgTrue = mri_reconRoemer( mri_reconIFFT( kData, 'multiSlice', true ), 'sMaps', sMaps );
-    figure;  imshowscale( abs( imgTrue ), showScale );  titlenice( 'Truth' );
+    %figure;  imshowscale( abs( imgTrue ), showScale );  titlenice( 'Truth' );
 
     noiseValues = imgTrue( noiseCoords(2):noiseCoords(4), noiseCoords(1):noiseCoords(3) );
-    noiseBound = norm( noiseValues(:), 2 )^2 / numel( noiseValues );
+    noiseVar = norm( noiseValues(:), 2 )^2 / numel( noiseValues );
+
+    imgZfCS = mri_reconRoemer( mri_reconIFFT( kSamplesCS, 'multiSlice', true ), 'sMaps', sMaps );
+    %figure;  imshowscale( abs( imgZfCS ), showScale );  titlenice( 'imgZfCS' );
 
     %imgMBR = mri_reconModelBased( kSamples, 'sMaps', sMaps );
     %figure;  imshowscale( abs( imgMBR ), showScale );  titlenice( 'MBR' );
@@ -55,40 +64,38 @@ load( 'stuff.mat', 'kData', 'sampleMask', 'noiseCoords' );
     %figure;  imshowscale( abs( imgSpirit ), showScale );  titlenice( 'Spirit' )
 
     % imgSpiritRegSptNoise = mri_reconSpiritReg( kSamples, sMaps, 'support', support, ...
-    %   'noiseBound', noiseBound );
+    %   'noiseVar', noiseVar );
     % figure;  imshowscale( abs( imgSpiritRegSptNoise ), showScale );  titlenice( 'SpiritRegSptNoise' )
 
+    imgSpiritRegCS = mri_reconSpiritReg( kSamplesCS, sMaps, 'cs', true, 'noiseVar', noiseVar );
+    figure;  imshowscale( abs( imgSpiritRegCS ), showScale );  titlenice( 'CS' )
+
     imgSpiritRegMFSNbGam = mri_reconSpiritReg( kSamples, sMaps, 'support', support, ...
-      'sACR', sACR, 'wSize', wSize, 'noiseBound', noiseBound );
-    figure;  imshowscale( abs( imgSpiritRegMFSNbGam ), showScale );  titlenice( 'SpiritRegMFSNbGam' )
+      'sACR', sACR, 'wSize', wSize, 'noiseVar', noiseVar );
+    figure;  imshowscale( abs( imgSpiritRegMFSNbGam ), showScale );  titlenice( 'MFSNbGam' )
 
     imgSpiritRegMFSNb = mri_reconSpiritReg( kSamples, sMaps, 'support', support, ...
-      'noiseBound', noiseBound );
-    figure;  imshowscale( abs( imgSpiritRegMFSNb ), showScale );  titlenice( 'SpiritRegMFSNb' )
+      'noiseVar', noiseVar );
+    figure;  imshowscale( abs( imgSpiritRegMFSNb ), showScale );  titlenice( 'MFSNb' )
 
     imgSpiritRegMFSPTGam = mri_reconSpiritReg( kSamples, sMaps, 'support', support, ...
       'sACR', sACR, 'wSize', wSize );
-    figure;  imshowscale( abs( imgSpiritRegMFSPTGam ), showScale );  titlenice( 'SpiritRegMFSPTGam' )
+    figure;  imshowscale( abs( imgSpiritRegMFSPTGam ), showScale );  titlenice( 'MFSPTGam' )
 
     imgSpiritRegGam = mri_reconSpiritReg( kSamples, sMaps, 'wSize', wSize, 'sACR', sACR );
-    figure;  imshowscale( abs( imgSpiritRegGam ), showScale );  titlenice( 'SpiritRegGam' )
+    figure;  imshowscale( abs( imgSpiritRegGam ), showScale );  titlenice( 'Gam' )
 
     imgSpiritRegMFSPT = mri_reconSpiritReg( kSamples, sMaps, 'support', support );
-    figure;  imshowscale( abs( imgSpiritRegMFSPT ), showScale );  titlenice( 'SpiritRegMFSPT' )
+    figure;  imshowscale( abs( imgSpiritRegMFSPT ), showScale );  titlenice( 'MFSPT' )
 
     imgSpiritRegMFS = mri_reconSpiritReg( kSamples, sMaps );
-    figure;  imshowscale( abs( imgSpiritRegMFS ), showScale );  titlenice( 'SpiritRegMFS' )
-
-    %imgSpiritRegGam = mri_reconSpiritReg( kSamples, sACR, wSize, sMaps, 'gamma', 1d-3 / numel( kSamples ) );
-    imgSpiritRegGam = mri_reconSpiritReg( kSamples, sMaps, ...
-      'sACR', sACR, 'support', support, 'wSize', wSize, 'noiseBound', noiseBound );
-    figure;  imshowscale( abs( imgSpiritRegGam ), showScale );  titlenice( 'SpiritRegGam' );
+    figure;  imshowscale( abs( imgSpiritRegMFS ), showScale );  titlenice( 'MFS' )
 
     kSamplesAug = fftshift2( fft2( ifftshift2( bsxfun( @times, sMaps, imgSpiritRegGam ) ) ) );
     [ ~, support2 ] = callPISCO( kSamplesAug, sImg );
     figure;  imshowscale( support2, showScale );
     imgSpiritRegGam2 = mri_reconSpiritReg( kSamples, sMaps, 'sACR', sACR, 'support', support2, ...
-      'wSize', wSize, 'noiseBound', noiseBound );
+      'wSize', wSize, 'noiseVar', noiseVar );
     figure;  imshowscale( abs( imgSpiritRegGam2 ), showScale );  titlenice( 'SpiritRegGam2' );
 
     disp( 'I got here' );
