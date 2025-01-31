@@ -1,7 +1,7 @@
 
 function img = mri_reconSpiritReg( kData, sMaps, varargin )
-  % img = mri_reconSpiritReg( kData, sMaps [ , 'cs', true/false, 'gamma', gamma, 
-  %       'sACR', sACR, 'noiseVar', noiseVar, 'support', support, 
+  % img = mri_reconSpiritReg( kData [, 'cs', true/false, 'gamma', gamma, 
+  %       'noiseVar', noiseVar, 'sACR', sACR, 'sMaps', sMaps, 'support', support, 
   %       'verbose', verbose, 'wSize', wSize ] )
   %
   % The Data consistency term, by default is Adc = M F S
@@ -76,6 +76,7 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   p.addParameter( 'optAlg', [], @(x) true );
   p.addParameter( 'Psi', [] );
   p.addParameter( 'sACR', [], @ispositive );
+  p.addParameter( 'sMaps', [], @isnumeric );
   p.addParameter( 'support', [], @(x) isnumeric(x) || islogical(x) );
   p.addParameter( 'verbose', true );
   p.addParameter( 'wSize', [], @ispositive );
@@ -87,26 +88,34 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   optAlg = p.Results.optAlg;
   Psi = p.Results.Psi;
   sACR = p.Results.sACR;
+  sMaps = p.Results.sMaps;
   support = p.Results.support;
   verbose = p.Results.verbose;
   wSize = p.Results.wSize;
-
-  if numel( wSize ) > 0  &&  numel( sACR ) == 0
-    error( 'Must supply sACR if you supply wSize' );
-  end
-  if ( cs == true || cs > 0 ) &&  numel( noiseVar ) == 0
-    error( 'Must supply a noise bound when doing compressed sensing' );
-  end
-
-  if isscalar( sACR ), sACR = [ sACR sACR ]; end
-  if isscalar( wSize ), wSize = [ wSize wSize ]; end
-  if min( mod( wSize, 2 ) ) < 1, error( 'wSize elements must be odd' ); end
 
   sKData = size( kData );
   nKData = numel( kData );
   sImg = sKData(1:2);
   nCoils = size( kData, 3 );
   nImg = prod( sImg );
+  if isscalar( sACR ), sACR = [ sACR sACR ]; end
+  if isscalar( wSize ), wSize = [ wSize wSize ]; end
+
+  if numel( wSize ) > 0  &&  numel( sACR ) == 0
+    error( 'Must supply sACR if you supply wSize' );
+  end
+  if numel( wSize ) > 0  &&  nCoils > 1
+    error( 'Cannot perform spiritReg with only one coil' );
+  end
+  if ( cs == true || cs > 0 ) &&  numel( noiseVar ) == 0
+    error( 'Must supply a noise bound when doing compressed sensing' );
+  end
+
+  if min( mod( wSize, 2 ) ) < 1, error( 'wSize elements must be odd' ); end
+  if numel( sMaps ) == 0
+    if nCoils > 1, error( 'Must supply sMaps with multiple coils' ); end
+    sMaps = ones( sImg );
+  end
 
   sampleMask = ( kData ~= 0 );
   b = kData( sampleMask == 1 );
@@ -122,6 +131,7 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   end
   sImg0 = size( img0 );
   nImg0 = numel( img0 );
+
 
   %% Create linear transformations and their adjoints
 
@@ -351,6 +361,7 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
     
   end
 
+
   %% Create the functions for the optimization algorithms
 
   nInDC = nb;
@@ -361,7 +372,7 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   if numel( noiseVar ) > 0, bound_gDC_ind = 0.5 * noiseVar * nb; end
   gDC_ind = @( x ) indicatorFunction( gDC( x ), [ 0 bound_gDC_ind ] );
 
-  % || x - b ||^2 <= noiseVar * nb
+  % 0.5 || x - b ||^2 <= 0.5 noiseVar * nb
   % || x - b ||_2 <= sqrt( noiseVar * nb )
 
   if numel( noiseVar ) > 0  &&  noiseVar == 0
@@ -442,11 +453,15 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   usePDHG = false;
   useFISTA = false;
 
-  tol = 1d-6;
-  nMaxIter = 100;
-  [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
-    @apply_vMFS, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
-  img0 = reshape( img, sImg );
+  if nCoils == 1
+    img0 = fftshift2( ifft2( ifftshift2( kData ) ) );
+  else
+    tol = 1d-6;
+    nMaxIter = 100;
+    [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
+      @apply_vMFS, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+    img0 = reshape( img, sImg );
+  end
 
   if cs == true
     if gDC( applyMFS( img0 ) ) > bound_gDC_ind
@@ -519,8 +534,6 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
     %normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
 load( 'normA.mat', 'normA' );
     tau = 1 / normA;
-
-tau = 1d5;
 
     if numel( optAlg ) == 0, optAlg = 'pdhgWLS'; end
 
