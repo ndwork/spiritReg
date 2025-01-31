@@ -5,14 +5,18 @@ function [ senseMaps, eig_mask ] = callPISCO( kCal, dim_sens, varargin )
   p.addParameter( 'M', [], @ispositive );
   p.addParameter( 'PowerIteration_G_nullspace_vectors', 0 );
   p.addParameter( 'supportThresh', [], @ispositive );
+  p.addParameter( 'tau', 3, @ispositive );
   p.addParameter( 'verbose', false );
   p.parse( varargin{:} );
   M = p.Results.M;
   PowerIteration_G_nullspace_vectors = p.Results.PowerIteration_G_nullspace_vectors;
   supportThresh = p.Results.supportThresh;
+  tau = p.Results.tau;
   verbose = p.Results.verbose;
 
-  tau = 3; % Kernel radius - half ESPIRiT's window size
+  if numel( tau ) == 0
+    tau = 3; % Kernel radius - half ESPIRiT's window size
+  end
 
   %threshold = 0.08; % Theshold for C-matrix singular values
   threshold = []; % Theshold for C-matrix singular values
