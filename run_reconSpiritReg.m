@@ -1,5 +1,6 @@
 function run_reconSpiritReg( datacases )
-  close all; rng(1);
+  %close all; 
+  rng(1);
 
   showScale = 5;
   verbose = true;
@@ -10,6 +11,7 @@ function run_reconSpiritReg( datacases )
   if nargin < 1
     %datacases = [ 7 11 1 0 2:6 8:10 ];
     datacases = 9;
+%datacases = 6;
   end
 
   [~, nCores] = getNumCores();
@@ -45,19 +47,20 @@ load( 'stuff.mat', 'kData', 'sampleMask', 'sampleMaskCS', 'noiseCoords' );
     disp([ 'Sample burden with CS: ', num2str( sum(sampleMaskCS(:)) / numel( sampleMaskCS(:) ) ) ]);
 
     acr = cropData( kSamples, [ sACR sACR nCoils ] );
-    [ sMaps, support ] = callPISCO( acr, sImg );
+    [ sMaps, support ] = callPISCO( acr, sImg, 'tau', 3 );
     %figure;  imshowscale( support, showScale );
 
-    imgTrue = mri_reconRoemer( mri_reconIFFT( kData, 'multiSlice', true ), 'sMaps', sMaps );
+    %imgTrue = mri_reconRoemer( mri_reconIFFT( kData, 'multiSlice', true ), 'sMaps', sMaps );
     %figure;  imshowscale( abs( imgTrue ), showScale );  titlenice( 'Truth' );
 
-    noiseValues = imgTrue( noiseCoords(2):noiseCoords(4), noiseCoords(1):noiseCoords(3) );
+    coilRecons = mri_reconIFFT( kData, 'multiSlice', true );
+    noiseValues = coilRecons( noiseCoords(2):noiseCoords(4), noiseCoords(1):noiseCoords(3), : );
     noiseVar = norm( noiseValues(:), 2 )^2 / numel( noiseValues );
 
     imgZfCS = mri_reconRoemer( mri_reconIFFT( kSamplesCS, 'multiSlice', true ), 'sMaps', sMaps );
     %figure;  imshowscale( abs( imgZfCS ), showScale );  titlenice( 'imgZfCS' );
 
-    %imgMBR = mri_reconModelBased( kSamples, 'sMaps', sMaps );
+    %imgMBR = mri_reconModelBased( kSamplesCS, 'sMaps', sMaps );
     %figure;  imshowscale( abs( imgMBR ), showScale );  titlenice( 'MBR' );
 
     %imgSpirit = mri_reconSpirit( kSamples, sACR, wSize );
@@ -67,7 +70,11 @@ load( 'stuff.mat', 'kData', 'sampleMask', 'sampleMaskCS', 'noiseCoords' );
     %   'noiseVar', noiseVar );
     % figure;  imshowscale( abs( imgSpiritRegSptNoise ), showScale );  titlenice( 'SpiritRegSptNoise' )
 
-    imgSpiritRegCS = mri_reconSpiritReg( kSamplesCS, sMaps, 'cs', true, 'noiseVar', noiseVar );
+imgSpiritRegCS = mri_reconSpiritReg( kSamplesCS(:,:,1), 'cs', true, 'noiseVar', 0 );
+figure;  imshowscale( abs( imgSpiritRegCS ), showScale );  titlenice( 'CS' )
+
+    imgSpiritRegCS = mri_reconSpiritReg( kSamplesCS, sMaps, 'cs', true, 'noiseVar', noiseVar, ...
+      'sMaps', sMaps );
     figure;  imshowscale( abs( imgSpiritRegCS ), showScale );  titlenice( 'CS' )
 
     imgSpiritRegMFSNbGam = mri_reconSpiritReg( kSamples, sMaps, 'support', support, ...

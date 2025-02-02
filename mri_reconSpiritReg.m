@@ -1,5 +1,5 @@
 
-function img = mri_reconSpiritReg( kData, sMaps, varargin )
+function img = mri_reconSpiritReg( kData, varargin )
   % img = mri_reconSpiritReg( kData [, 'cs', true/false, 'gamma', gamma, 
   %       'noiseVar', noiseVar, 'sACR', sACR, 'sMaps', sMaps, 'support', support, 
   %       'verbose', verbose, 'wSize', wSize ] )
@@ -11,9 +11,14 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   % minimize || Adc x - b ||_2
   %
   % When compressed sensing is set, the problem becomes
-  %   minimize || Psi x ||_1 subject to || Adc x - b ||_2^2 / numel(b) <= noiseVar
+  %   minimize || Psi y ||_{2,1} subject to || M F y(c) - b(c) ||_2^2 / numel(b(c)) <= noiseVar
+  %     where y is an array of size M x N x C representing images of all coils
+  %   This is equivalent to
+  %     || M F y(c) - b(c) ||_2^2 <= noiseVar * numel( b(c) )
   %   a noiseVar is required when using compressed sensing
   %   by default, Psi is the Daubechies-4 wavelet transform
+  %   After y is created, the single image x is reconstructed by solving
+  %     minimize || S x - y ||_2 with LSQR
   %
   % If wSize and sACR are supplied, then the problem is also constrained by
   %   || ( W - I ) F S PT x ||_2^2 / N <= gamma
@@ -56,8 +61,8 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   % implied warranties of merchantability or fitness for a particular
   % purpose.
 
+% TODO: add in compressed sensing for multiple coils
 % TODO: take a different noise bound into account for each coil
-% TODO: add in compressed sensing
 % TODO: replace L1 norm in compressed sensing with Huber penalty
 
   if nargin < 2
@@ -120,6 +125,8 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   sampleMask = ( kData ~= 0 );
   b = kData( sampleMask == 1 );
   nb = numel( b );
+  sOut = [ sImg(:)' nCoils ];
+  nUnknown = prod( sOut ) - nb;
 
   img0 = zeros( sImg );
   nSupport = nImg;
@@ -144,6 +151,15 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
     end
   end
 
+  function out = applyMc( in, op )  % Apply M complement
+    if nargin < 2  ||  strcmp( op, 'notransp' )
+      out = in( sampleMask == 0 );
+    else
+      out = zeros( [ sImg nCoils ] );
+      out( sampleMask == 0 ) = in;
+    end
+  end
+
   function out = applyP( in, op )
     if nargin < 2  ||  strcmp( op, 'notransp' )
       out = in( support == 1 );
@@ -153,19 +169,65 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
     end
   end
 
+  function out = applyF( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = fftshift2( fft2( ifftshift2( in ) ) );
+    elseif strcmp( op, 'inv' )
+      out = fftshift2( ifft2( ifftshift2( in ) ) );
+    elseif strcmp( op, 'transpInv' )
+      out = fftshift2( ifft2h( ifftshift2( in ) ) );
+    elseif strcmp( op, 'transp' )
+      out = fftshift2( fft2h( ifftshift2( in ) ) );
+    else
+      error( 'unrecognized operation' );
+    end
+  end
+
+  function out = applyS( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = bsxfun( @times, sMaps, in );
+    else
+      out = sum( conj(sMaps) .* in, 3 );
+    end
+  end
+
+  function out = apply_vS( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = applyS( reshape( in, sImg ), op );
+    else
+      out = applyS( reshape( in, sKData ), op );
+    end
+    out = out(:);
+  end
+
   function out = applyFS( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       if numel( img0 ) ~= nImg
         in = applyP( in, 'transp' );
       end
-      Sin = bsxfun( @times, sMaps, in );
-      out = fftshift2( fft2( ifftshift2( Sin ) ) );
+      out = applyF( applyS( in ) );
     else
-      FAhIn = fftshift2( fft2h( ifftshift2( in ) ) );
-      out = sum( conj(sMaps) .* FAhIn, 3 );
+      out = applyS( applyF( in, op ), op );
       if numel( img0 ) ~= nImg
         out = applyP( out, 'notransp' );
       end
+    end
+  end
+
+  function out = applyMF( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = applyM( applyF( in ) );
+    else
+      out = applyF( applyM( in, op ), op );
+    end
+  end
+
+  function out = apply_vMF( in, op ) %vectorized version of applyMF
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = applyMF( reshape( in, sKData ) );
+    else
+      out = applyMF( in, 'transp' );
+      out = out(:);
     end
   end
 
@@ -256,32 +318,46 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
 
   function out = defaultPsi( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
-      out = wtDaubechies2( in, wavSplit );
+      out = zeros( sKData );
+      for coilIndx = 1 : nCoils
+        out(:,:,coilIndx) = wtDaubechies2( in(:,:,coilIndx), wavSplit );
+      end
     else
-      out = iwtDaubechies2( in, wavSplit );
+      out = zeros( sKData );
+      for coilIndx = 1 : nCoils
+        out(:,:,coilIndx) = iwtDaubechies2( in(:,:,coilIndx), wavSplit );
+      end
     end
   end
 
   if numel( Psi ) == 0
     wavSplit = makeWavSplit( sImg );
     Psi = @defaultPsi;
-    nPsiOut = numel( Psi( rand(sImg) ) );
+    nPsiOut = numel( Psi( rand( sKData ) ) );
   end
 
-  function out = concatPsiMFS( in, op )
+  function out = PsiFinvMcT( in, op )
+    if nargin < 2 || strcmp( op, 'notransp' )
+      out = Psi( applyF( applyMc( in, 'transp' ), 'inv' ) );
+    else
+      out = applyMc( applyF( Psi( in, 'transp' ), 'transpInv' ) );
+    end
+  end
+
+  function out = concatPsiMF( in, op )
     if nargin < 2 || strcmp( op, 'notransp' )
       PsiIn = Psi( in );
-      FSin = applyFS( in );
-      MFSin = applyM( FSin );
-      out = [ PsiIn(:); MFSin(:); ];
+      MFin = applyMF( in );
+      out = [ PsiIn(:); MFin(:); ];
     else
-      PsiIn1 = Psi( reshape( in(1:nPsiOut), sImg ), op );
-      SHFHMTin2 = applyFS( applyM( in(nPsiOut+1:end), op ), op );
-      out = PsiIn1 + SHFHMTin2;
+      PsiIn1 = Psi( reshape( in(1:nPsiOut), [ sImg nCoils ] ), op );
+      FHMTin2 = applyMF( in(nPsiOut+1:end), op );
+      out = PsiIn1 + FHMTin2;
     end
   end
 
   %% Check the adjoints
+doChecks = true
   if doChecks == true
     if nImg0 ~= nImg
       [chkP,errChkP] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyP );
@@ -292,11 +368,47 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
       end
     end
 
+    [chkS,errChkS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @applyS );
+    if chkS == true
+      disp( 'Check of S Adjoint passed' );
+    else
+      error([ 'Check of S Adjoint failed with error ', num2str(errChkS) ]);
+    end
+
+    [chk_vS,errChk_vS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), @apply_vS );
+    if chk_vS == true
+      disp( 'Check of vS Adjoint passed' );
+    else
+      error([ 'Check of vS Adjoint failed with error ', num2str(errChk_vS) ]);
+    end
+
     [chkFS,errChkFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @applyFS );
     if chkFS == true
       disp( 'Check of FS Adjoint passed' );
     else
       error([ 'Check of FS Adjoint failed with error ', num2str(errChkFS) ]);
+    end
+
+    [chkF,errChkF] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyF );
+    if chkF == true
+      disp( 'Check of F Adjoint passed' );
+    else
+      error([ 'Check of F Adjoint failed with error ', num2str(errChkF) ]);
+    end
+
+    [chkMF,errChkMF] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), @applyMF );
+    if chkMF == true
+      disp( 'Check of MF Adjoint passed' );
+    else
+      error([ 'Check of MF Adjoint failed with error ', num2str(errChkMF) ]);
+    end
+
+    nKData = prod( sKData );
+    [chk_vMF,errChk_vMF] = checkAdjoint( rand( nKData, 1 ) + 1i * rand( nKData, 1 ), @apply_vMF );
+    if chk_vMF == true
+      disp( 'Check of vMF Adjoint passed' );
+    else
+      error([ 'Check of vMF Adjoint failed with error ', num2str(errChk_vMF) ]);
     end
 
     [chkMFS,errChkMFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @applyMFS );
@@ -308,9 +420,17 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
 
     [chk_vMFS,errChk_vMFS] = checkAdjoint( rand( sImg0 ) + 1i * rand( sImg0 ), @apply_vMFS );
     if chk_vMFS == true
-      disp( 'Check of MFS Adjoint passed' );
+      disp( 'Check of vMFS Adjoint passed' );
     else
-      error([ 'Check of MFS Adjoint failed with error ', num2str(errChk_vMFS) ]);
+      error([ 'Check of vMFS Adjoint failed with error ', num2str(errChk_vMFS) ]);
+    end
+
+    [chkPsiFinvMcT,errChkPsiFinvMcT] = checkAdjoint( ...
+      rand( nUnknown, 1 ) + 1i * rand( nUnknown, 1 ), @PsiFinvMcT );
+    if chkPsiFinvMcT == true
+      disp( 'Check of PsiFinvMcT Adjoint passed' );
+    else
+      error([ 'Check of PsiFinvMcT Adjoint failed with error ', num2str(errChkPsiFinvMcT) ]);
     end
 
     if numel( wSize ) > 0
@@ -344,19 +464,19 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
       end
     end
 
-    [chkPsi,errChkPsi] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), Psi );
+    [chkPsi,errChkPsi] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), Psi );
     if chkPsi == true
       disp( 'Check of Psi Adjoint passed' );
     else
       error([ 'Check of Psi Adjoint failed with error ', num2str(errChkPsi) ]);
     end
 
-    [chk_concatPsiMFS,errChk_concatPsiMFS] = checkAdjoint( rand( sImg ) + 1i * rand( sImg ), ...
-      @concatPsiMFS );
-    if chk_concatPsiMFS == true
-      disp( 'Check of concatPsiMFS Adjoint passed' );
+    [chk_concatPsiMF,errChk_concatPsiMF] = checkAdjoint( rand( sKData ) + 1i * rand( sKData ), ...
+      @concatPsiMF );
+    if chk_concatPsiMF == true
+      disp( 'Check of concatPsiMF Adjoint passed' );
     else
-      error([ 'Check of concatPsiMFS Adjoint failed with error ', num2str(errChk_concatPsiMFS) ]);
+      error([ 'Check of concatPsiMF Adjoint failed with error ', num2str(errChk_concatPsiMF) ]);
     end
     
   end
@@ -369,17 +489,46 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
 
   prox_gDCH = @(in,t) proxL2Sq( in, t, b );
 
-  if numel( noiseVar ) > 0, bound_gDC_ind = 0.5 * noiseVar * nb; end
-  gDC_ind = @( x ) indicatorFunction( gDC( x ), [ 0 bound_gDC_ind ] );
+  nbc = nb / nCoils;
+  function out = gDC_ind( in )
+    diffs = reshape( in - b, [], nCoils );
+    if max( LpNorms( diffs, 2, 1 ).^2 ) > nbc * noiseVar
+      out = Inf;
+    else
+      out = 0;
+    end
+  end
 
-  % 0.5 || x - b ||^2 <= 0.5 noiseVar * nb
-  % || x - b ||_2 <= sqrt( noiseVar * nb )
+  radGdcInd = sqrt( nbc * noiseVar );
+  bGdcInd = reshape( b, [], nCoils );
+  function out = prox_gDC_ind( in, t )   %#ok<INUSD>
+    in = reshape( in, [], nCoils );
+    diffs = in - reshape( b, [], nCoils );
+    normsSq = LpNorms( diffs, 2, 1 );
+    out = in;
+    for c = 1 : nCoils
+      if normsSq(c) > radGdcInd
+        out(:,c) = projectOntoBall( in(:,c) - bGdcInd(:,c), radGdcInd ) + bGdcInd(:,c);
+      end
+    end
+  end
 
-  if numel( noiseVar ) > 0  &&  noiseVar == 0
-    prox_gDC_indH = @(in,t) b;
+  if nCoils == 1
+    % || x - b ||^2 / nb <= noiseVar
+    % gDC( x ) = 0.5 || x - b ||^2 <= 0.5 * noiseVar * nb
+    % || x - b ||_2 <= sqrt( noiseVar * nb )
+    if numel( noiseVar ) > 0, bound_gDC_ind = 0.5 * noiseVar * nb; end
+    gDC_indH = @( x ) indicatorFunction( gDC( x ), [ 0 bound_gDC_ind ] );
+
+    if numel( noiseVar ) > 0  &&  noiseVar == 0
+      prox_gDC_indH = @(in,t) b;
+    else
+      rad_gDH_indH = sqrt( noiseVar * nb );
+      prox_gDC_indH = @(in,t) projectOntoBall( in - b, rad_gDH_indH, 2 ) + b;
+    end
   else
-    rad_gDH_indH = sqrt( noiseVar * nb );
-    prox_gDC_indH = @(in,t) projectOntoBall( in - b, rad_gDH_indH, 2 ) + b;
+    gDC_indH = @gDC_ind;
+    prox_gDC_indH = @prox_gDC_ind;
   end
 
   if numel( support ) > 0  &&  numel( noiseVar ) > 0  &&  noiseVar > 0
@@ -443,8 +592,28 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
     prox_gSpiritRegH = [];
   end
 
-  gCS = @(in) norm( in(:), 1 );
-  prox_gCS = @(in,t) proxL1Complex( in, t );
+  function out = prox_gCS_multiCoil( in, t )
+    out = proxL2L1( reshape( in, [ sImg, nCoils ] ), t );
+    out = out(:);
+  end
+
+  if nCoils == 1
+    if noiseVar == 0
+      bCS = Psi( applyF( kData, 'inv' ) );
+      gCS = @(in) norm( in(:) + bCS(:), 1 );
+      prox_gCS = @(in,t) proxL1Complex( in + bCS, t ) - bCS;
+    else
+      gCS = @(in) norm( in(:), 1 );
+      prox_gCS = @(in,t) proxL1Complex( in, t );
+    end
+  else
+    if noiseVar == 0
+      error( 'Not yet implemented' );
+    else
+      gCS = @(in) normL2L1( in );
+      prox_gCS = @prox_gCS_multiCoil;
+    end
+  end
 
   % Create f, g, and A so that we are optimizing f(x) + g(Ax)
   f = [];  proxf = [];
@@ -456,17 +625,16 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   if nCoils == 1
     img0 = fftshift2( ifft2( ifftshift2( kData ) ) );
   else
-    tol = 1d-6;
-    nMaxIter = 100;
-    [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
-      @apply_vMFS, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
-    img0 = reshape( img, sImg );
-  end
 
-  if cs == true
-    if gDC( applyMFS( img0 ) ) > bound_gDC_ind
-      warning( 'The compressed sensing problem is infeasible.  Reconstructing without cs.')
-      cs = false;
+    if cs == true
+      img0 = fftshift2( ifft2( ifftshift2( kData ) ) );
+
+    else
+      tol = 1d-6;
+      nMaxIter = 100;
+      [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
+        @apply_vMFS, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+      img0 = reshape( img, sImg );
     end
   end
 
@@ -474,13 +642,25 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
     usePDHG = true;
 
     if numel( gSupportH ) == 0  &&  numel( gSpiritRegH ) == 0
-      applyA = @(in,op) concatPsiMFS( in, op );
-      n1 = nPsiOut;
-      n2 = n1 + nInDC;
-      g = @(in) gCS( in( 1 : n1 ) ) + ...
-                gDC_ind( in( n1 + 1 : n2 ) );
-      proxg = @(in,t) [ prox_gCS( in( 1 : n1 ), t ); ...
-                        prox_gDC_indH( in( n1 + 1 : n2 ), t ); ];
+
+      if noiseVar == 0
+        % minimize || Psi F^{-1} ( Mc^T kUnknown + kData ) ||_1
+        % minimize || Psi F^{-1} Mc^T kUnknown + Psi F^{-1} kData ) ||_1
+        applyA = @(in,op) PsiFinvMcT( in, op );
+        g = gCS;  % g(in) = || in + Psi F^{-1} kData ||_1
+        proxg = prox_gCS;
+        x0 = zeros( nUnknown, 1 );
+
+      elseif noiseVar > 0
+TODO: since works when noiseVar == 0, problem looks to be in the indicator function or its prox
+        applyA = @(in,op) concatPsiMF( in, op );
+        n1 = nPsiOut;
+        n2 = n1 + nInDC;
+        g = @(in) gCS( in( 1 : n1 ) ) + ...
+                  gDC_indH( in( n1 + 1 : n2 ) );
+        proxg = @(in,t) [ prox_gCS( in( 1 : n1 ), t ); ...
+                          prox_gDC_indH( in( n1 + 1 : n2 ), t ); ];
+      end
 
     else
       error( 'Not yet implemented' );
@@ -531,18 +711,17 @@ function img = mri_reconSpiritReg( kData, sMaps, varargin )
   if usePDHG == true
     proxgConj = @(in,s) proxConj( proxg, in, s );
 
-    %normA = powerIteration( applyA, rand(sImg) + 1i * rand( sImg ) );
-load( 'normA.mat', 'normA' );
+    normA = powerIteration( applyA, rand(size(x0)) + 1i * rand( size(x0) ) );
     tau = 1 / normA;
 
     if numel( optAlg ) == 0, optAlg = 'pdhgWLS'; end
 
     if strcmp( optAlg, 'pdhg' )
-      [img, objValues, relDiffs] = pdhg( img0, proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', g, ...
+      [y, objValues, relDiffs] = pdhg( x0, proxf, proxgConj, tau, 'A', applyA, 'f', f, 'g', g, ...
         'N', 1000, 'normA', normA, 'printEvery', 10, 'verbose', verbose );   %#ok<ASGLU>
     elseif strcmp( optAlg, 'pdhgWLS' )
-      [img, objValues] = pdhgWLS( img0, proxf, proxgConj, 'A', applyA, 'tau', tau, ...
-        'f', f, 'g', g, 'verbose', verbose );   %#ok<ASGLU>
+      [y, objValues] = pdhgWLS( x0, proxf, proxgConj, 'A', applyA, 'tau', tau, ...
+        'f', f, 'g', g, 'N', 100, 'verbose', verbose );   %#ok<ASGLU>
     else
       error( 'Unrecognized optimization algorithm' );
     end
@@ -552,10 +731,10 @@ load( 'normA.mat', 'normA' );
     L = powerIteration( ATA, rand( sImg ), 'symmetric', true );
     t0 = 1 / L;
     if verbose == true
-      [img,objValues,relDiffs] = fista_wLS( img0, f, fGrad, proxg, 'h', g, 't0', t0, ...
+      [y,objValues,relDiffs] = fista_wLS( img0, f, fGrad, proxg, 'h', g, 't0', t0, ...
         'verbose', verbose );   %#ok<ASGLU>
     else
-      img = fista_wLS( img0, f, fGrad, proxg, 'h', g, 'verbose', verbose );
+      y = fista_wLS( img0, f, fGrad, proxg, 'h', g, 'verbose', verbose );
     end
 
   else  % use LSQR
@@ -565,10 +744,32 @@ load( 'normA.mat', 'normA' );
       @apply_vMFS, b, tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
   end
 
-  if nImg0 ~= nImg
-    img = applyP( img, 'transp' );
+
+  %% Post processing to reconstruct the image after solving the problem
+
+  if cs == true
+
+    if noiseVar == 0
+      img = applyF( applyMc( y, 'transp' ) + kData, 'inv' );
+    end
+
+    if nCoils > 1
+      tol = 1d-6;
+      nMaxIter = 100;
+      img0 = mri_reconRoemer( img );
+      [ img, lsqrFlag, lsqrRelRes, lsqrIter, lsqrResVec ] = lsqr( ...
+        @apply_vS, img(:), tol, nMaxIter, [], [], img0(:) );   %#ok<ASGLU>
+  
+      img = reshape( img, sImg );
+    end
+
   else
-    img = reshape( img, sImg );
+    if nImg0 ~= nImg
+      img = applyP( y, 'transp' );
+    else
+      img = reshape( y, sImg );
+    end
+
   end
 
 end
