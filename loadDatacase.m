@@ -133,9 +133,9 @@ function [ data, noiseCoords, res, trueRecon ] = loadDatacase( datacase, varargi
         [data,header] = read_MR_rawdata( [ dataDir, '/fullySampled3D/body3d/P26112.7' ] );   %#ok<ASGLU>
         data = squeeze( data );
         data = ifft( ifftshift( data, 3 ), [], 3 );
-        data = rot90( data(:,:,280,:), -1 );
+        data = fliplr( rot90( data(:,:,280,:), -1 ) );
       end
-      noiseCoords = [ 193 1 256 64 ];
+      noiseCoords = [ 2 5 62 64 ];
       res = 1.0d-3;  % meters per pixel
 
     case 10
@@ -155,11 +155,10 @@ function [ data, noiseCoords, res, trueRecon ] = loadDatacase( datacase, varargi
       if loadData == true
         [data,header] = read_MR_rawdata( [ dataDir, '/fullySampled3D/body3d/P27648.7' ] );   %#ok<ASGLU>
         data = squeeze( data );
-        %data = rot90( data, -1 );
         data = ifft( ifftshift( data, 3 ), [], 3 );
-        data = data(:,:,50,:);
+        data = fliplr( rot90( data(:,:,50,:), -1 ) );
       end
-      noiseCoords = [ 10 10 100 100 ];
+      noiseCoords = [ 2 5 62 64 ];
       res = 1.0d-3;  % meters per pixel
       
     otherwise
