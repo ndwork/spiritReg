@@ -61,7 +61,7 @@ load( 'kData.mat', 'kData', 'sampleMaskCS', 'noiseCoords' );
       noiseVars(c) = norm( noiseValues(:,:,c), 'fro' )^2 / numel( noiseValues(:,:,c) );
     end
 
-    epsData = nImg * noiseVars;
+    epsData = noiseVars;
     img = mriRecon( kSamplesCS, 'sMaps', sMaps, 'epsData', epsData, 'wSize', 5, 'sACR', sACR, ...
       'support', support, 'epsSupport', noiseVar );
     figure;  imshowscale( abs( img ), showScale );
